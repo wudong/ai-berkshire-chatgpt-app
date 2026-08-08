@@ -1,6 +1,6 @@
 # AI Berkshire ChatGPT App
 
-A ChatGPT/MCP adaptation of [`xbtlin/ai-berkshire`](https://github.com/xbtlin/ai-berkshire), currently focused on **US-listed operating-company stocks only**.
+A private ChatGPT/MCP adaptation of [`xbtlin/ai-berkshire`](https://github.com/xbtlin/ai-berkshire), currently focused on **US-listed operating-company stocks only**.
 
 > **Current direction:** stay close to how the original AI Berkshire repo works. ChatGPT gathers research from the web; the MCP app provides portfolio/thesis state and deterministic financial calculations. We are deliberately not building a market-data provider framework yet.
 
@@ -41,6 +41,72 @@ Research memo
 
 This intentionally mirrors the original repo's US-stock flow: the agent is the integration/research layer, while deterministic code checks important arithmetic.
 
+## Runtime
+
+The service is Bun-native. Bun `1.3.14` is pinned in `.bun-version` and is used as the package manager, test runner, bundler, script runner, and production runtime.
+
+The HTTP edge is Hono on `Bun.serve`, bound to loopback only in production. Better Auth provides OAuth for the MCP resource using Google as the upstream identity provider. PostgreSQL stores Better Auth state.
+
+Production shape:
+
+```text
+ChatGPT / MCP client
+        |
+        | HTTPS + OAuth 2.1
+        v
+Cloudflare Tunnel
+        |
+        v
+127.0.0.1:3020
+        |
+        +-- /mcp
+        +-- /api/auth/*
+        +-- /.well-known/*
+        +-- /sign-in
+        +-- /consent
+        +-- /healthz
+```
+
+## Authentication
+
+Authentication mirrors the existing `gcloud/vps-investigation-mcp` service:
+
+- Better Auth + `@better-auth/mcp`;
+- Google OAuth as the only upstream sign-in provider;
+- OAuth Dynamic Client Registration enabled for MCP clients;
+- verified Google email required;
+- one allowlisted Google email;
+- optional immutable Google `sub` pinning;
+- account linking disabled;
+- 10-minute MCP access tokens;
+- 30-day refresh tokens;
+- resource-bound MCP OAuth flow;
+- one application scope: `investing:access`.
+
+The custom `investing:access` scope is issued by this MCP service. It is not a Google API scope.
+
+### Google OAuth client
+
+Create a Google OAuth **Web application** client, or add the new callback to an existing client, with this authorised redirect URI:
+
+```text
+https://<MCP_HOSTNAME>/api/auth/callback/google
+```
+
+The canonical Better Auth origin is:
+
+```text
+https://<MCP_HOSTNAME>
+```
+
+The MCP resource is:
+
+```text
+https://<MCP_HOSTNAME>/mcp
+```
+
+For isolation between services, a separate Google OAuth client is preferred even though Google allows multiple redirect URIs on one web client.
+
 ## US-stock source policy
 
 For material financial facts:
@@ -59,7 +125,7 @@ Discrepancy policy, following the original AI Berkshire written financial-data r
 - `> 1% and <= 5%` — warning; investigate units/accounting/timing;
 - `> 5%` — fail; check SEC/company primary filing before continuing.
 
-## What works today
+## MCP tools
 
 ### Portfolio / thesis
 
@@ -102,63 +168,100 @@ For a US stock research request, the intended sequence is:
 2. Rate information richness (A/B/C), following AI Berkshire.
 3. Gather current and historical facts from Macrotrends and StockAnalysis.
 4. Read the latest SEC filing / company IR material for primary-source confirmation.
-5. Validate at minimum:
-   - current price;
-   - shares outstanding;
-   - market cap;
-   - annual revenue;
-   - annual net income;
-   - cash / short-term investments;
-   - debt / net cash;
-   - free cash flow.
+5. Validate at minimum current price, shares outstanding, market cap, annual revenue, annual net income, cash / short-term investments, debt / net cash, and free cash flow.
 6. Run the MCP financial-rigor tools.
 7. Only then perform the Buffett / Munger / Duan Yongping / Li Lu qualitative analysis.
 8. Separate `FACT`, `ANALYSIS`, and `UNCERTAINTY` in the final memo.
 9. Include the strongest counterargument and what evidence would falsify the thesis.
 
-## Architecture
+## Local development
 
-```text
-                 ChatGPT
-                    |
-          web search / browsing
-                    |
-      +-------------+-------------+
-      |             |             |
- Macrotrends   StockAnalysis     SEC / IR
-      |             |             |
-      +-------------+-------------+
-                    |
-                    v
-             collected facts
-                    |
-                    v
-          AI Berkshire MCP app
-                    |
-       +------------+-------------+
-       |                          |
- financial-rigor              portfolio /
- calculations                 thesis state
-       |                          |
-       +------------+-------------+
-                    |
-                    v
-             ChatGPT reasoning
+Requirements:
+
+- Bun 1.3.14+
+- PostgreSQL
+- a Google OAuth web client if exercising the full browser OAuth flow
+
+Copy the environment template and configure a local/test database:
+
+```bash
+cp .env.example .env
+bun install --frozen-lockfile
+bun run auth:migrate
+bun run check
+bun run dev
 ```
 
-The MCP server is **not** currently responsible for scraping or storing Macrotrends, StockAnalysis, SEC, Yahoo, or news data.
+The application binds to `127.0.0.1:3020` by default. The local health endpoint is:
 
-## Why keep it simple
+```text
+http://127.0.0.1:3020/healthz
+```
 
-The original AI Berkshire repo already demonstrates that an agent can gather web information effectively. We should first prove that the same workflow works well inside ChatGPT before introducing:
+For a real OAuth/MCP client connection, `BETTER_AUTH_URL` and `MCP_RESOURCE_URL` should use the HTTPS hostname whose callback is registered with Google.
 
-- market-data provider abstractions;
-- SEC ingestion services;
-- evidence warehouses;
-- caching pipelines;
-- scheduled data collectors.
+## Automated VPS deployment
 
-Those are optimizations, not requirements for the first useful version.
+Deployment intentionally mirrors the existing gcloud MCP delivery model.
+
+Every push to `main` runs the quality gate. The production workflow then:
+
+1. installs the committed Bun dependency graph with `bun install --frozen-lockfile`;
+2. runs TypeScript checks, Bun tests, server/widget builds, and deployment-script validation;
+3. uploads a versioned release to `/opt/ai-berkshire-mcp/releases/<commit-sha>`;
+4. provisions a dedicated `ai-berkshire-mcp` Unix service user;
+5. provisions the dedicated local PostgreSQL role/database `ai_berkshire_mcp`;
+6. writes the root-owned runtime environment under `/etc/ai-berkshire-mcp`;
+7. runs Better Auth migrations;
+8. atomically switches `/opt/ai-berkshire-mcp/current` while retaining `previous`;
+9. restarts the hardened `ai-berkshire-mcp.service` systemd unit;
+10. verifies `http://127.0.0.1:3020/healthz` and automatically restores the previous release if the new release fails;
+11. adds/updates this hostname in the existing Cloudflare tunnel without replacing unrelated ingress entries;
+12. creates/updates the proxied DNS CNAME;
+13. verifies `https://<MCP_HOSTNAME>/healthz` externally.
+
+A manual rollback workflow is provided in `.github/workflows/rollback.yml`.
+
+### Required GitHub Actions secrets
+
+Shared VPS deployment:
+
+- `VPS_HOST`
+- `VPS_USER` — must have root provisioning/systemd access; the mirrored pipeline expects root
+- `VPS_SSH_KEY`
+
+Google / MCP authentication:
+
+- `MCP_GOOGLE_CLIENT_ID`
+- `MCP_GOOGLE_CLIENT_SECRET`
+- `MCP_BETTER_AUTH_SECRET`
+- `MCP_ALLOWED_GOOGLE_EMAIL`
+- `MCP_ALLOWED_GOOGLE_SUB` — optional but recommended
+- `MCP_DATABASE_PASSWORD`
+- `MCP_HOSTNAME` — bare hostname only, for example `investing-mcp.example.com`
+
+Cloudflare:
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+- `CLOUDFLARE_ZONE_ID`
+- `CLOUDFLARE_TUNNEL_ID`
+
+The Cloudflare tunnel is shared safely: the deployment script changes only the ingress entry for `MCP_HOSTNAME` and leaves unrelated hostnames untouched.
+
+## Production isolation
+
+This service intentionally does not share application state with the VPS diagnostic MCP:
+
+- systemd unit: `ai-berkshire-mcp.service`;
+- Unix user: `ai-berkshire-mcp`;
+- application root: `/opt/ai-berkshire-mcp`;
+- config root: `/etc/ai-berkshire-mcp`;
+- state root: `/var/lib/ai-berkshire-mcp`;
+- PostgreSQL database/role: `ai_berkshire_mcp`;
+- loopback port: `3020`.
+
+It may share the same VPS and Cloudflare tunnel infrastructure.
 
 ## Safety boundary
 
@@ -172,39 +275,13 @@ The application must not:
 
 This is an investment research and decision-support application, not an autonomous trading system.
 
-## Run locally
-
-Requires Node.js 22+.
-
-```bash
-npm install
-npm run typecheck
-npm test
-npm run build
-npm start
-```
-
-MCP endpoint:
-
-```text
-http://localhost:8787/mcp
-```
-
-Inspect locally with:
-
-```bash
-npx @modelcontextprotocol/inspector@latest
-```
-
-For ChatGPT testing, expose port `8787` through HTTPS and connect ChatGPT Developer Mode to the resulting `/mcp` endpoint.
-
 ## Current milestone
 
 See [Issue #1](https://github.com/wudong/ai-berkshire-chatgpt-app/issues/1): **Mirror original AI Berkshire US-stock research workflow**.
 
-Next items:
+After the authenticated MCP is deployed and connected to ChatGPT, the next application steps are:
 
-1. test the three financial-rigor tools from ChatGPT;
+1. test the financial-rigor tools from ChatGPT;
 2. add the original-style three-scenario valuation helper;
 3. test one real US company end-to-end;
 4. refine tool descriptions/prompts based on actual ChatGPT behavior;
