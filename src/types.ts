@@ -1,105 +1,112 @@
-export type ThesisStatus = "GREEN" | "YELLOW" | "RED" | "BROKEN";
+export type SecurityType = "equity" | "etf" | "cash" | "other";
 
-export interface Holding {
+export type ThesisStatus =
+  | "green"
+  | "yellow"
+  | "red"
+  | "broken"
+  | "insufficient_evidence";
+
+export type AssumptionStatus =
+  | "supported"
+  | "weakening"
+  | "damaged"
+  | "falsified"
+  | "unknown";
+
+/** Financial quantities are serialized as decimal strings. */
+export type DecimalString = string;
+
+export interface InstrumentHolding {
+  instrumentId: string;
   ticker: string;
-  company: string;
-  market: string;
-  currency: string;
-  shares: number;
-  averageCost: number;
-  referencePrice: number;
-  weightPct: number;
-  thesisStatus: ThesisStatus;
-  conviction: number;
-  ownerEarningsYieldPct?: number;
-  expectedGrowthPct?: number;
+  name: string;
+  securityType: SecurityType;
+  quantity: DecimalString;
+  tradingCurrency: string;
+  referenceMarketValueBase: DecimalString;
+  averageCost?: DecimalString;
+  costCurrency?: string;
 }
 
-export interface Portfolio {
+export interface CashBalance {
+  currency: string;
+  amountBase: DecimalString;
+}
+
+export interface PortfolioSnapshot {
+  snapshotId: string;
   asOf: string;
   baseCurrency: string;
-  cashPct: number;
-  holdings: Holding[];
-  notes?: string[];
+  holdings: InstrumentHolding[];
+  cash: CashBalance[];
+  fixture: boolean;
+  warnings: string[];
 }
 
 export interface ThesisAssumption {
-  id: string;
+  assumptionId: string;
   statement: string;
-  status: "INTACT" | "WEAKENING" | "BROKEN" | "UNKNOWN";
-  evidence?: string;
+  validationMethod: string;
+  cadence?: string;
+  status: AssumptionStatus;
+  evidenceIds: string[];
 }
 
-export interface InvestmentThesis {
+export interface ReviewTrigger {
+  triggerId: string;
+  statement: string;
+  severity: "review" | "major_review";
+}
+
+export interface ThesisVersion {
+  thesisId: string;
+  version: number;
+  instrumentId: string;
   ticker: string;
-  company: string;
-  status: ThesisStatus;
-  lastReviewed: string;
-  businessEssence: string;
-  moat: string;
-  management: string;
-  valuation: string;
-  downsideControl: string;
+  createdAt: string;
+  fiveSentenceThesis: string[];
   assumptions: ThesisAssumption[];
-  redLines: string[];
-  whatWouldChangeOurMind: string[];
+  reviewTriggers: ReviewTrigger[];
+  status: ThesisStatus;
 }
 
-export interface PortfolioAlert {
-  severity: "INFO" | "WATCH" | "HIGH";
-  ticker?: string;
-  message: string;
-}
-
-export interface PortfolioReview {
-  asOf: string;
-  defaultAction: "NO_ACTION";
-  concentration: {
-    largestHoldingPct: number;
-    top3Pct: number;
-    holdingCount: number;
-    cashPct: number;
-  };
-  thesisSummary: Record<ThesisStatus, number>;
-  opportunityRanking: Array<{
-    ticker: string;
-    estimatedAnnualReturnPct: number | null;
-    conviction: number;
-    thesisStatus: ThesisStatus;
-  }>;
-  alerts: PortfolioAlert[];
-  methodologyNote: string;
-}
-
-export interface CandidateOpportunity {
+export interface HoldingWeight {
+  instrumentId: string;
   ticker: string;
-  company: string;
-  ownerEarningsYieldPct: number;
-  expectedGrowthPct: number;
-  conviction: number;
-  thesisStatus: ThesisStatus;
-  cashHurdlePct: number;
+  weightPct: DecimalString;
 }
 
-export interface OpportunityComparison {
-  candidate: {
-    ticker: string;
-    estimatedAnnualReturnPct: number;
-    conviction: number;
-    thesisStatus: ThesisStatus;
-  };
-  bestExisting: {
-    ticker: string;
-    estimatedAnnualReturnPct: number;
-    conviction: number;
-  } | null;
-  weakestExisting: {
-    ticker: string;
-    estimatedAnnualReturnPct: number;
-    conviction: number;
-  } | null;
-  cashHurdlePct: number;
-  researchVerdict: "RESEARCH_FURTHER" | "WATCH" | "PASS";
-  rationale: string[];
-  methodologyNote: string;
+export interface PortfolioDiagnostics {
+  snapshotId: string;
+  asOf: string;
+  baseCurrency: string;
+  totalReferenceValueBase: DecimalString;
+  investedReferenceValueBase: DecimalString;
+  cashReferenceValueBase: DecimalString;
+  cashWeightPct: DecimalString;
+  holdings: HoldingWeight[];
+  largestHoldingPct: DecimalString;
+  top3HoldingPct: DecimalString;
+  holdingCount: number;
+  warnings: string[];
+  calculationVersion: string;
+}
+
+export interface MetricValidationResult {
+  firstValue: DecimalString;
+  secondValue: DecimalString;
+  discrepancyPct: DecimalString;
+  tolerancePct: DecimalString;
+  status: "consistent" | "conflicting";
+  calculationVersion: string;
+}
+
+export interface MarketCapVerificationResult {
+  calculatedMarketCap: DecimalString;
+  reportedMarketCap: DecimalString;
+  discrepancyPct: DecimalString;
+  tolerancePct: DecimalString;
+  status: "consistent" | "conflicting";
+  calculationVersion: string;
 }
