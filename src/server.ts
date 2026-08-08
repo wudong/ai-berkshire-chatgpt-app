@@ -159,8 +159,7 @@ function createBerkshireServer(): McpServer {
     })
   );
 
-  registerAppTool(
-    server,
+  server.registerTool(
     "get_portfolio_snapshot",
     {
       title: "Get portfolio snapshot",
@@ -184,8 +183,7 @@ function createBerkshireServer(): McpServer {
     }
   );
 
-  registerAppTool(
-    server,
+  server.registerTool(
     "get_thesis",
     {
       title: "Get investment thesis",
@@ -213,8 +211,7 @@ function createBerkshireServer(): McpServer {
     }
   );
 
-  registerAppTool(
-    server,
+  server.registerTool(
     "run_portfolio_diagnostics",
     {
       title: "Run portfolio diagnostics",
