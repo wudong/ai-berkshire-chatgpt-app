@@ -81,22 +81,25 @@ jobs:
           workload_identity_provider: ${{ vars.AI_BERKSHIRE_DEPLOY_WIF_PROVIDER }}
           service_account: ${{ vars.AI_BERKSHIRE_DEPLOY_SERVICE_ACCOUNT }}
 
-      - name: Load shared deployment credentials
+      - name: Load runtime deployment credentials
         if: steps.wif_config.outputs.configured == 'true'
-        id: shared-secrets
+        id: gcp-secrets
         uses: google-github-actions/get-secretmanager-secrets@v3
         with:
           secrets: |-
             vps_ssh_key:wudong-agent-master/tt-players-hetzner-vps-deploy-key
             cloudflare_account_id:wudong-agent-master/cloudflare-account-id
             cloudflare_api_token:wudong-agent-master/ttlive-domain-cloudflare-tunnel-api-token
+            google_client_id:wudong-agent-master/mcp-internal-google-client-id
+            google_client_secret:wudong-agent-master/mcp-internal-google-client-secret
+            allowed_google_email:wudong-agent-master/mcp-internal-allowed-google-email
 
       - name: Configure deployment SSH
         if: steps.wif_config.outputs.configured == 'true'
         env:
           VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
           VPS_HOST_KEY: ${{ vars.AI_BERKSHIRE_VPS_HOST_KEY }}
-          VPS_SSH_KEY: ${{ steps.shared-secrets.outputs.vps_ssh_key }}
+          VPS_SSH_KEY: ${{ steps.gcp-secrets.outputs.vps_ssh_key }}
         run: |
           set -euo pipefail
           test -n "$VPS_HOST"
@@ -113,14 +116,21 @@ jobs:
         env:
           VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
           VPS_USER: ${{ vars.AI_BERKSHIRE_VPS_USER }}
+          GOOGLE_CLIENT_ID: ${{ steps.gcp-secrets.outputs.google_client_id }}
+          GOOGLE_CLIENT_SECRET: ${{ steps.gcp-secrets.outputs.google_client_secret }}
+          ALLOWED_GOOGLE_EMAIL: ${{ steps.gcp-secrets.outputs.allowed_google_email }}
         run: |
           set -euo pipefail
           test -n "$VPS_USER"
+          test -n "$GOOGLE_CLIENT_ID"
+          test -n "$GOOGLE_CLIENT_SECRET"
+          test -n "$ALLOWED_GOOGLE_EMAIL"
           ssh "$VPS_USER@$VPS_HOST" 'test "$(id -u)" = 0 && systemctl is-active cloudflared postgresql >/dev/null'
           {
             echo '### AI Berkshire delivery canary'
             echo '- GitHub OIDC → GCP WIF: **passed**'
-            echo '- Secret Manager shared credential read: **passed**'
+            echo '- Explicit Secret Manager runtime allowlist: **passed**'
+            echo '- Shared internal MCP Google OAuth config: **passed**'
             echo '- Pinned-host-key VPS SSH: **passed**'
             echo '- VPS cloudflared/postgresql health: **passed**'
             echo '- Production mutation: **none**'
@@ -133,15 +143,16 @@ jobs:
           VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
           VPS_USER: ${{ vars.AI_BERKSHIRE_VPS_USER }}
           MCP_HOSTNAME: ${{ vars.AI_BERKSHIRE_MCP_HOSTNAME }}
-          GOOGLE_CLIENT_ID: ${{ vars.AI_BERKSHIRE_GOOGLE_CLIENT_ID }}
-          ALLOWED_GOOGLE_EMAIL: ${{ vars.AI_BERKSHIRE_ALLOWED_GOOGLE_EMAIL }}
           CLOUDFLARE_ZONE_ID: ${{ vars.AI_BERKSHIRE_CLOUDFLARE_ZONE_ID }}
           CLOUDFLARE_TUNNEL_ID: ${{ vars.AI_BERKSHIRE_CLOUDFLARE_TUNNEL_ID }}
+          GOOGLE_CLIENT_ID: ${{ steps.gcp-secrets.outputs.google_client_id }}
+          GOOGLE_CLIENT_SECRET: ${{ steps.gcp-secrets.outputs.google_client_secret }}
+          ALLOWED_GOOGLE_EMAIL: ${{ steps.gcp-secrets.outputs.allowed_google_email }}
         run: |
           set -euo pipefail
           configured=true
           missing=()
-          for name in VPS_HOST VPS_USER MCP_HOSTNAME GOOGLE_CLIENT_ID ALLOWED_GOOGLE_EMAIL CLOUDFLARE_ZONE_ID CLOUDFLARE_TUNNEL_ID; do
+          for name in VPS_HOST VPS_USER MCP_HOSTNAME CLOUDFLARE_ZONE_ID CLOUDFLARE_TUNNEL_ID GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ALLOWED_GOOGLE_EMAIL; do
             if [[ -z "${!name}" ]]; then
               configured=false
               missing+=("$name")
@@ -149,17 +160,9 @@ jobs:
           done
           echo "configured=$configured" >> "$GITHUB_OUTPUT"
           if [[ "$configured" != true ]]; then
-            printf 'Production deployment skipped. Missing repository Variables: %s\n' "${missing[*]}" >> "$GITHUB_STEP_SUMMARY"
+            printf 'Production deployment skipped. Missing required configuration: %s\n' "${missing[*]}" >> "$GITHUB_STEP_SUMMARY"
             echo '::notice::The WIF canary can still be run while production configuration is incomplete.'
           fi
-
-      - name: Load AI Berkshire OAuth secret
-        if: steps.deployment_config.outputs.configured == 'true'
-        id: app-secrets
-        uses: google-github-actions/get-secretmanager-secrets@v3
-        with:
-          secrets: |-
-            google_client_secret:wudong-agent-master/ai-berkshire-google-oauth-client-secret
 
       - name: Upload versioned release
         if: steps.deployment_config.outputs.configured == 'true'
@@ -183,9 +186,9 @@ jobs:
           VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
           VPS_USER: ${{ vars.AI_BERKSHIRE_VPS_USER }}
           RELEASE_SHA: ${{ github.sha }}
-          MCP_GOOGLE_CLIENT_ID: ${{ vars.AI_BERKSHIRE_GOOGLE_CLIENT_ID }}
-          MCP_GOOGLE_CLIENT_SECRET: ${{ steps.app-secrets.outputs.google_client_secret }}
-          MCP_ALLOWED_GOOGLE_EMAIL: ${{ vars.AI_BERKSHIRE_ALLOWED_GOOGLE_EMAIL }}
+          MCP_GOOGLE_CLIENT_ID: ${{ steps.gcp-secrets.outputs.google_client_id }}
+          MCP_GOOGLE_CLIENT_SECRET: ${{ steps.gcp-secrets.outputs.google_client_secret }}
+          MCP_ALLOWED_GOOGLE_EMAIL: ${{ steps.gcp-secrets.outputs.allowed_google_email }}
           MCP_ALLOWED_GOOGLE_SUB: ${{ vars.AI_BERKSHIRE_ALLOWED_GOOGLE_SUB }}
           MCP_HOSTNAME: ${{ vars.AI_BERKSHIRE_MCP_HOSTNAME }}
         run: |
@@ -221,8 +224,8 @@ jobs:
       - name: Configure Cloudflare tunnel and DNS
         if: steps.deployment_config.outputs.configured == 'true'
         env:
-          CLOUDFLARE_API_TOKEN: ${{ steps.shared-secrets.outputs.cloudflare_api_token }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ steps.shared-secrets.outputs.cloudflare_account_id }}
+          CLOUDFLARE_API_TOKEN: ${{ steps.gcp-secrets.outputs.cloudflare_api_token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.gcp-secrets.outputs.cloudflare_account_id }}
           CLOUDFLARE_ZONE_ID: ${{ vars.AI_BERKSHIRE_CLOUDFLARE_ZONE_ID }}
           CLOUDFLARE_TUNNEL_ID: ${{ vars.AI_BERKSHIRE_CLOUDFLARE_TUNNEL_ID }}
           MCP_HOSTNAME: ${{ vars.AI_BERKSHIRE_MCP_HOSTNAME }}
@@ -251,6 +254,7 @@ jobs:
             echo "- Endpoint: \`https://$MCP_HOSTNAME/mcp\`"
             echo '- Local origin: `http://127.0.0.1:3020`'
             echo '- Auth: Better Auth MCP OAuth + Google provider'
+            echo '- Google OAuth config: shared internal MCP values from GCP Secret Manager'
             echo '- CI credentials: GitHub OIDC → GCP WIF → Secret Manager'
           } >> "$GITHUB_STEP_SUMMARY"
 
