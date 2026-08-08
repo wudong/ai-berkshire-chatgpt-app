@@ -10,8 +10,8 @@ import {
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { compareOpportunity, reviewPortfolio } from "./analysis.js";
-import { loadPortfolio, loadThesis } from "./data.js";
+import { portfolioDiagnostics } from "./calculations.js";
+import { researchRepository } from "./data.js";
 
 const APP_NAME = "ai-berkshire-portfolio";
 const APP_VERSION = "0.1.0";
@@ -21,117 +21,92 @@ const PORTFOLIO_WIDGET_URI = "ui://ai-berkshire/portfolio/v1.html";
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(dirname, "..");
 
-const thesisStatusSchema = z.enum(["GREEN", "YELLOW", "RED", "BROKEN"]);
-const assumptionStatusSchema = z.enum([
-  "INTACT",
-  "WEAKENING",
-  "BROKEN",
-  "UNKNOWN"
+const decimalStringSchema = z.string().regex(/^\d+(?:\.\d+)?$/);
+const thesisStatusSchema = z.enum([
+  "green",
+  "yellow",
+  "red",
+  "broken",
+  "insufficient_evidence"
 ]);
 
-const holdingOutputSchema = z.object({
+const holdingSchema = z.object({
+  instrumentId: z.string(),
   ticker: z.string(),
-  company: z.string(),
-  market: z.string(),
-  currency: z.string(),
-  shares: z.number(),
-  averageCost: z.number(),
-  referencePrice: z.number(),
-  weightPct: z.number(),
-  thesisStatus: thesisStatusSchema,
-  conviction: z.number(),
-  ownerEarningsYieldPct: z.number().optional(),
-  expectedGrowthPct: z.number().optional()
+  name: z.string(),
+  securityType: z.enum(["equity", "etf", "cash", "other"]),
+  quantity: decimalStringSchema,
+  tradingCurrency: z.string(),
+  referenceMarketValueBase: decimalStringSchema,
+  averageCost: decimalStringSchema.optional(),
+  costCurrency: z.string().optional()
 });
 
-const portfolioOutputSchema = z.object({
+const snapshotSchema = z.object({
+  snapshotId: z.string(),
   asOf: z.string(),
   baseCurrency: z.string(),
-  cashPct: z.number(),
-  holdings: z.array(holdingOutputSchema),
-  notes: z.array(z.string()).optional()
+  holdings: z.array(holdingSchema),
+  cash: z.array(
+    z.object({ currency: z.string(), amountBase: decimalStringSchema })
+  ),
+  fixture: z.boolean(),
+  warnings: z.array(z.string())
 });
 
-const thesisOutputSchema = z.object({
+const thesisSchema = z.object({
+  thesisId: z.string(),
+  version: z.number().int().positive(),
+  instrumentId: z.string(),
   ticker: z.string(),
-  company: z.string(),
-  status: thesisStatusSchema,
-  lastReviewed: z.string(),
-  businessEssence: z.string(),
-  moat: z.string(),
-  management: z.string(),
-  valuation: z.string(),
-  downsideControl: z.string(),
+  createdAt: z.string(),
+  fiveSentenceThesis: z.array(z.string()).length(5),
   assumptions: z.array(
     z.object({
-      id: z.string(),
+      assumptionId: z.string(),
       statement: z.string(),
-      status: assumptionStatusSchema,
-      evidence: z.string().optional()
+      validationMethod: z.string(),
+      cadence: z.string().optional(),
+      status: z.enum([
+        "supported",
+        "weakening",
+        "damaged",
+        "falsified",
+        "unknown"
+      ]),
+      evidenceIds: z.array(z.string())
     })
   ),
-  redLines: z.array(z.string()),
-  whatWouldChangeOurMind: z.array(z.string())
+  reviewTriggers: z.array(
+    z.object({
+      triggerId: z.string(),
+      statement: z.string(),
+      severity: z.enum(["review", "major_review"])
+    })
+  ),
+  status: thesisStatusSchema
 });
 
-const reviewOutputSchema = z.object({
+const diagnosticsSchema = z.object({
+  snapshotId: z.string(),
   asOf: z.string(),
-  defaultAction: z.literal("NO_ACTION"),
-  concentration: z.object({
-    largestHoldingPct: z.number(),
-    top3Pct: z.number(),
-    holdingCount: z.number(),
-    cashPct: z.number()
-  }),
-  thesisSummary: z.object({
-    GREEN: z.number(),
-    YELLOW: z.number(),
-    RED: z.number(),
-    BROKEN: z.number()
-  }),
-  opportunityRanking: z.array(
+  baseCurrency: z.string(),
+  totalReferenceValueBase: decimalStringSchema,
+  investedReferenceValueBase: decimalStringSchema,
+  cashReferenceValueBase: decimalStringSchema,
+  cashWeightPct: decimalStringSchema,
+  holdings: z.array(
     z.object({
+      instrumentId: z.string(),
       ticker: z.string(),
-      estimatedAnnualReturnPct: z.number().nullable(),
-      conviction: z.number(),
-      thesisStatus: thesisStatusSchema
+      weightPct: decimalStringSchema
     })
   ),
-  alerts: z.array(
-    z.object({
-      severity: z.enum(["INFO", "WATCH", "HIGH"]),
-      ticker: z.string().optional(),
-      message: z.string()
-    })
-  ),
-  methodologyNote: z.string()
-});
-
-const comparisonOutputSchema = z.object({
-  candidate: z.object({
-    ticker: z.string(),
-    estimatedAnnualReturnPct: z.number(),
-    conviction: z.number(),
-    thesisStatus: thesisStatusSchema
-  }),
-  bestExisting: z
-    .object({
-      ticker: z.string(),
-      estimatedAnnualReturnPct: z.number(),
-      conviction: z.number()
-    })
-    .nullable(),
-  weakestExisting: z
-    .object({
-      ticker: z.string(),
-      estimatedAnnualReturnPct: z.number(),
-      conviction: z.number()
-    })
-    .nullable(),
-  cashHurdlePct: z.number(),
-  researchVerdict: z.enum(["RESEARCH_FURTHER", "WATCH", "PASS"]),
-  rationale: z.array(z.string()),
-  methodologyNote: z.string()
+  largestHoldingPct: decimalStringSchema,
+  top3HoldingPct: decimalStringSchema,
+  holdingCount: z.number().int().nonnegative(),
+  warnings: z.array(z.string()),
+  calculationVersion: z.string()
 });
 
 function widgetHtml(): string {
@@ -159,7 +134,7 @@ function createBerkshireServer(): McpServer {
     { name: APP_NAME, version: APP_VERSION },
     {
       instructions:
-        "Decision-support only. Separate facts, analysis, and uncertainty. Never infer live market data. Treat portfolio/thesis records as user-maintained snapshots. Prefer NO ACTION when evidence is insufficient. Compare opportunity cost and thesis red lines; price movement alone is not a thesis change."
+        "This app provides auditable investment research inputs, not trade execution or automatic recommendations. The backend owns portfolio facts and deterministic calculations; the model owns interpretation. Separate facts, analysis, and uncertainty. Never infer live market data from fixture values. Price movement alone is not a thesis change."
     }
   );
 
@@ -186,26 +161,23 @@ function createBerkshireServer(): McpServer {
 
   registerAppTool(
     server,
-    "get_portfolio",
+    "get_portfolio_snapshot",
     {
-      title: "Get portfolio",
+      title: "Get portfolio snapshot",
       description:
-        "Use when the user wants to inspect their current portfolio snapshot, holdings, weights, thesis states, or cash allocation. This v0 reads local user-maintained data and does not fetch live prices.",
+        "Load the current portfolio snapshot for research. Returns quantities, reference values, cash, timestamp, and data warnings only. No recommendation or interpretation. v0 uses a fictional fixture.",
       inputSchema: {},
-      outputSchema: { portfolio: portfolioOutputSchema },
-      annotations: readOnlyAnnotations(),
-      _meta: {
-        ui: { resourceUri: PORTFOLIO_WIDGET_URI }
-      }
+      outputSchema: { snapshot: snapshotSchema },
+      annotations: readOnlyAnnotations()
     },
     async () => {
-      const portfolio = await loadPortfolio();
+      const snapshot = await researchRepository.getLatestSnapshot();
       return {
-        structuredContent: { portfolio },
+        structuredContent: { snapshot },
         content: [
           {
             type: "text",
-            text: `Loaded portfolio snapshot as of ${portfolio.asOf} with ${portfolio.holdings.length} holdings and ${portfolio.cashPct}% cash.`
+            text: `Loaded ${snapshot.fixture ? "fictional fixture" : "portfolio"} snapshot ${snapshot.snapshotId} as of ${snapshot.asOf}. Values are reference inputs, not live quotes.`
           }
         ]
       };
@@ -214,37 +186,27 @@ function createBerkshireServer(): McpServer {
 
   registerAppTool(
     server,
-    "get_company_thesis",
+    "get_thesis",
     {
-      title: "Get company thesis",
+      title: "Get investment thesis",
       description:
-        "Use when the user asks why a portfolio company is owned, whether its thesis is intact, which assumptions are weakening, or what red lines would invalidate the investment case.",
+        "Load the latest explicit thesis version for an existing holding, including five-sentence thesis, falsifiable assumptions, assumption status, and review triggers. A review trigger starts research; it is not a trade instruction.",
       inputSchema: {
-        ticker: z.string().min(1).describe("Ticker symbol in the local thesis store")
+        ticker: z.string().min(1).describe("Ticker in the thesis repository")
       },
-      outputSchema: { thesis: thesisOutputSchema.nullable() },
+      outputSchema: { thesis: thesisSchema.nullable() },
       annotations: readOnlyAnnotations()
     },
     async ({ ticker }) => {
-      const thesis = await loadThesis(ticker);
-      if (!thesis) {
-        return {
-          structuredContent: { thesis: null },
-          content: [
-            {
-              type: "text",
-              text: `No local thesis was found for ${ticker.toUpperCase()}. Do not invent one; ask for or research the missing evidence.`
-            }
-          ]
-        };
-      }
-
+      const thesis = await researchRepository.getLatestByTicker(ticker);
       return {
         structuredContent: { thesis },
         content: [
           {
             type: "text",
-            text: `${thesis.ticker} thesis status is ${thesis.status}; last reviewed ${thesis.lastReviewed}.`
+            text: thesis
+              ? `${thesis.ticker} thesis v${thesis.version} has status ${thesis.status}. Interpret it with its evidence gaps and review triggers.`
+              : `No thesis exists for ${ticker.toUpperCase()}. Do not invent missing portfolio state.`
           }
         ]
       };
@@ -253,61 +215,56 @@ function createBerkshireServer(): McpServer {
 
   registerAppTool(
     server,
-    "review_portfolio",
+    "run_portfolio_diagnostics",
     {
-      title: "Review portfolio",
+      title: "Run portfolio diagnostics",
       description:
-        "Use for a Berkshire-style portfolio health review: concentration, thesis health, opportunity-cost ranking, and conditions that deserve deeper research. It does not make trades or use live market data.",
+        "Calculate deterministic portfolio weights, cash weight, largest-position weight, top-three weight, and data warnings using exact decimal arithmetic. Returns structure only; it does not define a universally correct concentration level or produce buy/sell advice.",
       inputSchema: {},
-      outputSchema: { review: reviewOutputSchema },
+      outputSchema: { diagnostics: diagnosticsSchema },
+      annotations: readOnlyAnnotations()
+    },
+    async () => {
+      const snapshot = await researchRepository.getLatestSnapshot();
+      const diagnostics = portfolioDiagnostics(snapshot);
+      return {
+        structuredContent: { diagnostics },
+        content: [
+          {
+            type: "text",
+            text: `Calculated portfolio diagnostics for ${snapshot.snapshotId} using calculation version ${diagnostics.calculationVersion}. Concentration metrics are descriptive, not target allocations.`
+          }
+        ]
+      };
+    }
+  );
+
+  registerAppTool(
+    server,
+    "render_portfolio_dashboard",
+    {
+      title: "Show portfolio dashboard",
+      description:
+        "Render the portfolio dashboard after the user asks to see or review portfolio structure. The widget displays the same read-only snapshot and exact diagnostics available from the data tools.",
+      inputSchema: {},
+      outputSchema: {
+        snapshot: snapshotSchema,
+        diagnostics: diagnosticsSchema
+      },
       annotations: readOnlyAnnotations(),
       _meta: {
         ui: { resourceUri: PORTFOLIO_WIDGET_URI }
       }
     },
     async () => {
-      const portfolio = await loadPortfolio();
-      const review = reviewPortfolio(portfolio);
+      const snapshot = await researchRepository.getLatestSnapshot();
+      const diagnostics = portfolioDiagnostics(snapshot);
       return {
-        structuredContent: { review },
+        structuredContent: { snapshot, diagnostics },
         content: [
           {
             type: "text",
-            text: `Portfolio review complete. Default action: ${review.defaultAction}. Found ${review.alerts.length} item(s) worth attention.`
-          }
-        ]
-      };
-    }
-  );
-
-  registerAppTool(
-    server,
-    "evaluate_opportunity",
-    {
-      title: "Compare an investment opportunity",
-      description:
-        "Use after the user supplies explicit assumptions for a candidate. Compare its simplified owner-earnings-yield plus growth return estimate against cash and modeled existing holdings. This is a research triage tool, not a buy/sell signal.",
-      inputSchema: {
-        ticker: z.string().min(1),
-        company: z.string().min(1),
-        ownerEarningsYieldPct: z.number(),
-        expectedGrowthPct: z.number(),
-        conviction: z.number().min(1).max(10),
-        thesisStatus: thesisStatusSchema,
-        cashHurdlePct: z.number().min(0)
-      },
-      outputSchema: { comparison: comparisonOutputSchema },
-      annotations: readOnlyAnnotations()
-    },
-    async (candidate) => {
-      const portfolio = await loadPortfolio();
-      const comparison = compareOpportunity(portfolio, candidate);
-      return {
-        structuredContent: { comparison },
-        content: [
-          {
-            type: "text",
-            text: `${candidate.ticker.toUpperCase()} research classification: ${comparison.researchVerdict}. The result is based only on supplied assumptions and the local portfolio snapshot.`
+            text: `Rendered portfolio dashboard for ${snapshot.snapshotId}. This is ${snapshot.fixture ? "fictional demo data" : "a portfolio snapshot"}, not live market data.`
           }
         ]
       };
@@ -357,8 +314,8 @@ const httpServer = createServer(async (req, res) => {
     });
 
     res.on("close", () => {
-      transport.close();
-      server.close();
+      void transport.close();
+      void server.close();
     });
 
     try {
