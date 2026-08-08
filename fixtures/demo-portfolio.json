@@ -1,0 +1,36 @@
+{
+  "snapshotId": "demo-portfolio-2026-08-08",
+  "asOf": "2026-08-08T12:00:00Z",
+  "baseCurrency": "GBP",
+  "fixture": true,
+  "warnings": [
+    "Fictional demo fixture only. Do not store real portfolio holdings or cost basis in Git.",
+    "Reference market values are static test inputs, not live market data."
+  ],
+  "holdings": [
+    {
+      "instrumentId": "demo-equity-a",
+      "ticker": "DEMO-A",
+      "name": "Example Compounder plc",
+      "securityType": "equity",
+      "quantity": "100",
+      "tradingCurrency": "GBP",
+      "referenceMarketValueBase": "45000"
+    },
+    {
+      "instrumentId": "demo-equity-b",
+      "ticker": "DEMO-B",
+      "name": "Example Cyclical Ltd",
+      "securityType": "equity",
+      "quantity": "200",
+      "tradingCurrency": "GBP",
+      "referenceMarketValueBase": "35000"
+    }
+  ],
+  "cash": [
+    {
+      "currency": "GBP",
+      "amountBase": "20000"
+    }
+  ]
+}
