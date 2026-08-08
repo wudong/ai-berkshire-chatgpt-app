@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   validate:
@@ -17,24 +17,7 @@ jobs:
         with:
           bun-version-file: .bun-version
       - name: Install dependencies
-        run: |
-          if [[ -f bun.lock ]]; then
-            bun install --frozen-lockfile
-          else
-            bun install
-          fi
-      - name: Commit generated Bun lockfile once
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('bun.lock') != '' }}
-        run: |
-          set -euo pipefail
-          if git ls-files --error-unmatch bun.lock >/dev/null 2>&1; then
-            exit 0
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add bun.lock
-          git commit -m 'chore: add Bun lockfile'
-          git push origin HEAD:main
+        run: bun install --frozen-lockfile
       - name: Quality gate
         run: bun run check
       - name: Validate deployment scripts
