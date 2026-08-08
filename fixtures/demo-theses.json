@@ -1,0 +1,92 @@
+[
+  {
+    "thesisId": "demo-thesis-a",
+    "version": 1,
+    "instrumentId": "demo-equity-a",
+    "ticker": "DEMO-A",
+    "createdAt": "2026-08-08T12:00:00Z",
+    "fiveSentenceThesis": [
+      "The business earns attractive returns from recurring customer demand.",
+      "Switching costs and brand strength are the hypothesized moat.",
+      "Management is assumed to allocate capital conservatively and communicate candidly.",
+      "The valuation case requires verified owner earnings and a meaningful margin of safety.",
+      "The downside case is controlled only if the balance sheet and moat remain resilient."
+    ],
+    "assumptions": [
+      {
+        "assumptionId": "demo-a-growth",
+        "statement": "Owner earnings can grow at a high-single-digit rate over a full cycle.",
+        "validationMethod": "Compare reported cash economics with primary filings and an independent source.",
+        "cadence": "quarterly",
+        "status": "supported",
+        "evidenceIds": []
+      },
+      {
+        "assumptionId": "demo-a-moat",
+        "statement": "The competitive moat is not structurally weakening.",
+        "validationMethod": "Review retention, pricing power, market share, and competitor evidence.",
+        "cadence": "quarterly",
+        "status": "unknown",
+        "evidenceIds": []
+      }
+    ],
+    "reviewTriggers": [
+      {
+        "triggerId": "demo-a-integrity",
+        "statement": "Material evidence of management integrity failure.",
+        "severity": "major_review"
+      },
+      {
+        "triggerId": "demo-a-economics",
+        "statement": "Sustained deterioration in the core unit economics.",
+        "severity": "review"
+      }
+    ],
+    "status": "insufficient_evidence"
+  },
+  {
+    "thesisId": "demo-thesis-b",
+    "version": 1,
+    "instrumentId": "demo-equity-b",
+    "ticker": "DEMO-B",
+    "createdAt": "2026-08-08T12:00:00Z",
+    "fiveSentenceThesis": [
+      "The business is cyclical and depends on industry conditions more than a classic compounder.",
+      "Scale may provide a cost advantage, but the durability of that advantage is uncertain.",
+      "Management quality must be judged mainly through balance-sheet and capital-allocation decisions.",
+      "Valuation should use normalized-cycle economics rather than a peak-year multiple.",
+      "Downside protection depends on surviving a recession without permanent equity impairment."
+    ],
+    "assumptions": [
+      {
+        "assumptionId": "demo-b-margins",
+        "statement": "Normalized margins remain above the prior-cycle trough.",
+        "validationMethod": "Review multi-cycle margins using primary filings.",
+        "cadence": "quarterly",
+        "status": "weakening",
+        "evidenceIds": []
+      },
+      {
+        "assumptionId": "demo-b-debt",
+        "statement": "Debt remains serviceable through a recession scenario.",
+        "validationMethod": "Stress interest coverage, maturities, liquidity, and covenant headroom.",
+        "cadence": "quarterly",
+        "status": "unknown",
+        "evidenceIds": []
+      }
+    ],
+    "reviewTriggers": [
+      {
+        "triggerId": "demo-b-balance-sheet",
+        "statement": "Balance-sheet stress threatens long-term equity value.",
+        "severity": "major_review"
+      },
+      {
+        "triggerId": "demo-b-moat",
+        "statement": "The hypothesized cost advantage disappears.",
+        "severity": "review"
+      }
+    ],
+    "status": "yellow"
+  }
+]
