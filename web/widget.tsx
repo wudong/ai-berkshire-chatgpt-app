@@ -48,6 +48,7 @@ const pending = new Map<
   number,
   { resolve: (value: any) => void; reject: (reason?: any) => void }
 >();
+const toolResultSubscribers = new Set<(payload: ToolPayload) => void>();
 
 function rpcNotify(method: string, params: unknown) {
   window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
@@ -60,6 +61,31 @@ function rpcRequest(method: string, params: unknown): Promise<any> {
     window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
   });
 }
+
+window.addEventListener(
+  "message",
+  (event: MessageEvent) => {
+    if (event.source !== window.parent) return;
+    const message = event.data;
+    if (!message || message.jsonrpc !== "2.0") return;
+
+    if (typeof message.id === "number") {
+      const request = pending.get(message.id);
+      if (!request) return;
+      pending.delete(message.id);
+      if (message.error) request.reject(message.error);
+      else request.resolve(message.result);
+      return;
+    }
+
+    if (message.method === "ui/notifications/tool-result") {
+      for (const subscriber of toolResultSubscribers) {
+        subscriber(message.params as ToolPayload);
+      }
+    }
+  },
+  { passive: true }
+);
 
 const bridgeReady = (async () => {
   await rpcRequest("ui/initialize", {
@@ -92,7 +118,6 @@ body { margin: 0; background: transparent; }
 .header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 14px; }
 .title { font-size: 18px; font-weight: 700; margin: 0; }
 .sub { font-size: 12px; opacity: .68; margin-top: 4px; }
-.badge { border: 1px solid rgba(127,127,127,.28); border-radius: 999px; padding: 6px 10px; font-size: 12px; white-space: nowrap; }
 .grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; margin-bottom: 12px; }
 .card { border: 1px solid rgba(127,127,127,.22); border-radius: 12px; padding: 12px; }
 .metric { font-size: 22px; font-weight: 700; }
@@ -123,26 +148,8 @@ function App() {
   };
 
   useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      if (event.source !== window.parent) return;
-      const message = event.data;
-      if (!message || message.jsonrpc !== "2.0") return;
-
-      if (typeof message.id === "number") {
-        const request = pending.get(message.id);
-        if (!request) return;
-        pending.delete(message.id);
-        if (message.error) request.reject(message.error);
-        else request.resolve(message.result);
-        return;
-      }
-
-      if (message.method === "ui/notifications/tool-result") {
-        applyPayload(message.params);
-      }
-    };
-
-    window.addEventListener("message", onMessage, { passive: true });
+    const subscriber = (payload: ToolPayload) => applyPayload(payload);
+    toolResultSubscribers.add(subscriber);
 
     void (async () => {
       try {
@@ -153,7 +160,9 @@ function App() {
       }
     })();
 
-    return () => window.removeEventListener("message", onMessage);
+    return () => {
+      toolResultSubscribers.delete(subscriber);
+    };
   }, []);
 
   const investedPct = useMemo(
