@@ -1,7 +1,41 @@
+# Dependencies
 node_modules/
+.pnpm-store/
+
+# Build output
 dist/
+build/
 web/dist/
+coverage/
+*.tsbuildinfo
+
+# Environment / secrets
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+
+# Private user data
+local/
+private/
+data/private/
+portfolio*.json
+portfolio*.csv
+holdings*.json
+holdings*.csv
+theses/private/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# OS / editors
 .DS_Store
+.idea/
+.vscode/
