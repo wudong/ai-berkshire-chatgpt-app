@@ -10,11 +10,16 @@ import {
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { portfolioDiagnostics } from "./calculations.js";
+import {
+  portfolioDiagnostics,
+  validateFinancialMetric,
+  verifyMarketCap,
+  verifyValuation
+} from "./calculations.js";
 import { researchRepository } from "./data.js";
 
 const APP_NAME = "ai-berkshire-portfolio";
-const APP_VERSION = "0.1.0";
+const APP_VERSION = "0.2.0";
 const MCP_PATH = "/mcp";
 const PORTFOLIO_WIDGET_URI = "ui://ai-berkshire/portfolio/v1.html";
 
@@ -22,6 +27,10 @@ const dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(dirname, "..");
 
 const decimalStringSchema = z.string().regex(/^\d+(?:\.\d+)?$/);
+const financialDecimalStringSchema = z
+  .string()
+  .regex(/^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/);
+const validationStatusSchema = z.enum(["pass", "warning", "fail"]);
 const thesisStatusSchema = z.enum([
   "green",
   "yellow",
@@ -109,6 +118,48 @@ const diagnosticsSchema = z.object({
   calculationVersion: z.string()
 });
 
+const marketCapVerificationSchema = z.object({
+  price: financialDecimalStringSchema,
+  sharesOutstanding: financialDecimalStringSchema,
+  calculatedMarketCap: financialDecimalStringSchema,
+  reportedMarketCap: financialDecimalStringSchema,
+  currency: z.string(),
+  discrepancyPct: financialDecimalStringSchema.nullable(),
+  status: validationStatusSchema,
+  calculationVersion: z.string()
+});
+
+const financialMetricValidationSchema = z.object({
+  field: z.string(),
+  unit: z.string(),
+  sourceCount: z.number().int().min(2),
+  referenceMedian: financialDecimalStringSchema,
+  sources: z.array(
+    z.object({
+      source: z.string(),
+      value: financialDecimalStringSchema,
+      deviationPct: financialDecimalStringSchema.nullable(),
+      status: validationStatusSchema
+    })
+  ),
+  maxDeviationPct: financialDecimalStringSchema.nullable(),
+  status: validationStatusSchema,
+  policy: z.literal("<=1% pass; >1% to <=5% warning; >5% fail"),
+  calculationVersion: z.string()
+});
+
+const valuationVerificationSchema = z.object({
+  price: financialDecimalStringSchema,
+  pe: financialDecimalStringSchema.optional(),
+  earningsYieldPct: financialDecimalStringSchema.optional(),
+  pb: financialDecimalStringSchema.optional(),
+  roePct: financialDecimalStringSchema.optional(),
+  pFcf: financialDecimalStringSchema.optional(),
+  fcfYieldPct: financialDecimalStringSchema.optional(),
+  dividendYieldPct: financialDecimalStringSchema.optional(),
+  calculationVersion: z.string()
+});
+
 function widgetHtml(): string {
   try {
     const bundle = readFileSync(
@@ -134,7 +185,7 @@ function createBerkshireServer(): McpServer {
     { name: APP_NAME, version: APP_VERSION },
     {
       instructions:
-        "This app provides auditable investment research inputs, not trade execution or automatic recommendations. The backend owns portfolio facts and deterministic calculations; the model owns interpretation. Separate facts, analysis, and uncertainty. Never infer live market data from fixture values. Price movement alone is not a thesis change."
+        "Follow the original AI Berkshire workflow for US-listed operating companies. ChatGPT is the web-research layer: gather financial facts from Macrotrends and StockAnalysis, and use SEC filings/company investor relations as authoritative primary sources for critical figures or disagreements. Then call this app's deterministic financial-rigor tools before investment interpretation. Separate FACT, ANALYSIS, and UNCERTAINTY. Do not infer live values from portfolio fixtures, do not treat price movement alone as thesis change, and do not execute trades."
     }
   );
 
@@ -149,11 +200,7 @@ function createBerkshireServer(): McpServer {
           uri: PORTFOLIO_WIDGET_URI,
           mimeType: RESOURCE_MIME_TYPE,
           text: widgetHtml(),
-          _meta: {
-            ui: {
-              prefersBorder: true
-            }
-          }
+          _meta: { ui: { prefersBorder: true } }
         }
       ]
     })
@@ -212,6 +259,101 @@ function createBerkshireServer(): McpServer {
   );
 
   server.registerTool(
+    "verify_market_cap",
+    {
+      title: "Verify market cap",
+      description:
+        "Use after collecting a US stock's current price, latest shares outstanding, and a reported market cap. Mirrors AI Berkshire financial_rigor.py: calculate price × shares exactly and classify discrepancy as pass (<=1%), warning (>1% to <=5%), or fail (>5%).",
+      inputSchema: {
+        price: financialDecimalStringSchema.describe("Current/share price as a decimal string"),
+        sharesOutstanding: financialDecimalStringSchema.describe("Latest shares outstanding as a decimal string"),
+        reportedMarketCap: financialDecimalStringSchema.describe("Market cap reported by the researched source"),
+        currency: z.string().default("USD")
+      },
+      outputSchema: { verification: marketCapVerificationSchema },
+      annotations: readOnlyAnnotations()
+    },
+    async ({ price, sharesOutstanding, reportedMarketCap, currency }) => {
+      const verification = verifyMarketCap(
+        price,
+        sharesOutstanding,
+        reportedMarketCap,
+        currency
+      );
+      return {
+        structuredContent: { verification },
+        content: [
+          {
+            type: "text",
+            text: `Market-cap verification: ${verification.status}; calculated ${verification.calculatedMarketCap} ${verification.currency} vs reported ${verification.reportedMarketCap} ${verification.currency}, discrepancy ${verification.discrepancyPct ?? "undefined"}%.`
+          }
+        ]
+      };
+    }
+  );
+
+  server.registerTool(
+    "validate_financial_metric",
+    {
+      title: "Validate financial metric",
+      description:
+        "Cross-check a US-company financial metric collected from at least two independent sources such as Macrotrends, StockAnalysis, and SEC/company filings. Uses the exact median as the reference and AI Berkshire's documented 1%/5% discrepancy bands.",
+      inputSchema: {
+        field: z.string().min(1),
+        sourceValues: z.record(financialDecimalStringSchema).refine(
+          (values) => Object.keys(values).length >= 2,
+          "At least two independent source values are required"
+        ),
+        unit: z.string().default("")
+      },
+      outputSchema: { validation: financialMetricValidationSchema },
+      annotations: readOnlyAnnotations()
+    },
+    async ({ field, sourceValues, unit }) => {
+      const validation = validateFinancialMetric(field, sourceValues, unit);
+      return {
+        structuredContent: { validation },
+        content: [
+          {
+            type: "text",
+            text: `${field} cross-validation: ${validation.status} across ${validation.sourceCount} source(s); median ${validation.referenceMedian}${unit ? ` ${unit}` : ""}. If status is fail, check the SEC/company filing before continuing.`
+          }
+        ]
+      };
+    }
+  );
+
+  server.registerTool(
+    "verify_valuation",
+    {
+      title: "Verify valuation ratios",
+      description:
+        "Calculate valuation ratios from raw US-stock inputs using exact decimal arithmetic. Mirrors the original AI Berkshire verify-valuation helper. Missing inputs stay missing; the tool never invents them.",
+      inputSchema: {
+        price: financialDecimalStringSchema,
+        eps: financialDecimalStringSchema.optional(),
+        bookValuePerShare: financialDecimalStringSchema.optional(),
+        fcfPerShare: financialDecimalStringSchema.optional(),
+        dividendPerShare: financialDecimalStringSchema.optional()
+      },
+      outputSchema: { valuation: valuationVerificationSchema },
+      annotations: readOnlyAnnotations()
+    },
+    async (input) => {
+      const valuation = verifyValuation(input);
+      return {
+        structuredContent: { valuation },
+        content: [
+          {
+            type: "text",
+            text: `Valuation ratios calculated with exact decimal arithmetic. Returned fields: ${Object.keys(valuation).filter((key) => !["price", "calculationVersion"].includes(key)).join(", ") || "none"}.`
+          }
+        ]
+      };
+    }
+  );
+
+  server.registerTool(
     "run_portfolio_diagnostics",
     {
       title: "Run portfolio diagnostics",
@@ -249,9 +391,7 @@ function createBerkshireServer(): McpServer {
         diagnostics: diagnosticsSchema
       },
       annotations: readOnlyAnnotations(),
-      _meta: {
-        ui: { resourceUri: PORTFOLIO_WIDGET_URI }
-      }
+      _meta: { ui: { resourceUri: PORTFOLIO_WIDGET_URI } }
     },
     async () => {
       const snapshot = await researchRepository.getLatestSnapshot();
