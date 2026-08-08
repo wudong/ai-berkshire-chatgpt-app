@@ -1,0 +1,70 @@
+[
+  {
+    "ticker": "DEMO-A",
+    "company": "Example Compounder plc",
+    "status": "GREEN",
+    "lastReviewed": "2026-08-08",
+    "businessEssence": "Illustrative high-return business with recurring customer demand.",
+    "moat": "Demo assumption: switching costs and brand strength remain durable.",
+    "management": "Demo assumption: management allocates capital conservatively.",
+    "valuation": "Demo assumption only; replace with a current valuation based on verified financial data.",
+    "downsideControl": "Require balance-sheet resilience and a margin of safety before considering additional capital.",
+    "assumptions": [
+      {
+        "id": "a1",
+        "statement": "The core business can grow owner earnings at a high-single-digit rate.",
+        "status": "INTACT",
+        "evidence": "Illustrative only. Replace with evidence from filings and independent sources."
+      },
+      {
+        "id": "a2",
+        "statement": "The moat is not materially weakening.",
+        "status": "INTACT"
+      }
+    ],
+    "redLines": [
+      "Management integrity failure",
+      "Sustained deterioration in core economics",
+      "Irreversible moat erosion"
+    ],
+    "whatWouldChangeOurMind": [
+      "Evidence that returns on incremental capital are structurally falling",
+      "A materially worse competitive position",
+      "A valuation that removes the margin of safety"
+    ]
+  },
+  {
+    "ticker": "DEMO-B",
+    "company": "Example Cyclical Ltd",
+    "status": "YELLOW",
+    "lastReviewed": "2026-08-08",
+    "businessEssence": "Illustrative cyclical business whose economics depend more heavily on industry conditions.",
+    "moat": "Demo assumption: scale provides some cost advantage, but durability is uncertain.",
+    "management": "Demo assumption: management quality is acceptable but capital allocation needs monitoring.",
+    "valuation": "Demo assumption only; replace with normalized-cycle valuation and verified source data.",
+    "downsideControl": "Use conservative normalized earnings and stress the balance sheet through a downturn.",
+    "assumptions": [
+      {
+        "id": "b1",
+        "statement": "Normalized margins remain above the prior-cycle trough.",
+        "status": "WEAKENING",
+        "evidence": "Illustrative warning state to demonstrate thesis monitoring."
+      },
+      {
+        "id": "b2",
+        "statement": "Debt remains manageable through a recession scenario.",
+        "status": "UNKNOWN"
+      }
+    ],
+    "redLines": [
+      "Balance-sheet stress threatens long-term equity value",
+      "Core cost advantage disappears",
+      "Management pursues value-destructive expansion"
+    ],
+    "whatWouldChangeOurMind": [
+      "Clear evidence of normalized margin recovery",
+      "Debt reduction materially improves downside protection",
+      "A stronger opportunity offers higher expected return with higher certainty"
+    ]
+  }
+]
