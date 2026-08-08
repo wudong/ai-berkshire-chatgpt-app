@@ -17,6 +17,8 @@ export type AssumptionStatus =
 /** Financial quantities are serialized as decimal strings. */
 export type DecimalString = string;
 
+export type FinancialValidationStatus = "pass" | "warning" | "fail";
+
 export interface InstrumentHolding {
   instrumentId: string;
   ticker: string;
@@ -93,6 +95,7 @@ export interface PortfolioDiagnostics {
   calculationVersion: string;
 }
 
+/** Legacy two-value helper retained for deterministic unit tests/internal use. */
 export interface MetricValidationResult {
   firstValue: DecimalString;
   secondValue: DecimalString;
@@ -103,10 +106,43 @@ export interface MetricValidationResult {
 }
 
 export interface MarketCapVerificationResult {
+  price: DecimalString;
+  sharesOutstanding: DecimalString;
   calculatedMarketCap: DecimalString;
   reportedMarketCap: DecimalString;
-  discrepancyPct: DecimalString;
-  tolerancePct: DecimalString;
-  status: "consistent" | "conflicting";
+  currency: string;
+  discrepancyPct: DecimalString | null;
+  status: FinancialValidationStatus;
+  calculationVersion: string;
+}
+
+export interface FinancialMetricSourceResult {
+  source: string;
+  value: DecimalString;
+  deviationPct: DecimalString | null;
+  status: FinancialValidationStatus;
+}
+
+export interface FinancialMetricValidationResult {
+  field: string;
+  unit: string;
+  sourceCount: number;
+  referenceMedian: DecimalString;
+  sources: FinancialMetricSourceResult[];
+  maxDeviationPct: DecimalString | null;
+  status: FinancialValidationStatus;
+  policy: "<=1% pass; >1% to <=5% warning; >5% fail";
+  calculationVersion: string;
+}
+
+export interface ValuationVerificationResult {
+  price: DecimalString;
+  pe?: DecimalString;
+  earningsYieldPct?: DecimalString;
+  pb?: DecimalString;
+  roePct?: DecimalString;
+  pFcf?: DecimalString;
+  fcfYieldPct?: DecimalString;
+  dividendYieldPct?: DecimalString;
   calculationVersion: string;
 }
