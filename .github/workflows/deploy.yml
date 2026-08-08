@@ -34,27 +34,62 @@ jobs:
       - name: Validate deployment scripts
         run: bash -n deploy/scripts/*.sh
 
+      - name: Check deployment configuration
+        id: deployment_config
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          MCP_GOOGLE_CLIENT_ID: ${{ secrets.MCP_GOOGLE_CLIENT_ID }}
+          MCP_GOOGLE_CLIENT_SECRET: ${{ secrets.MCP_GOOGLE_CLIENT_SECRET }}
+          MCP_BETTER_AUTH_SECRET: ${{ secrets.MCP_BETTER_AUTH_SECRET }}
+          MCP_ALLOWED_GOOGLE_EMAIL: ${{ secrets.MCP_ALLOWED_GOOGLE_EMAIL }}
+          MCP_DATABASE_PASSWORD: ${{ secrets.MCP_DATABASE_PASSWORD }}
+          MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          CLOUDFLARE_TUNNEL_ID: ${{ secrets.CLOUDFLARE_TUNNEL_ID }}
+        run: |
+          set -euo pipefail
+          configured=true
+          missing=()
+          for name in \
+            VPS_HOST VPS_USER VPS_SSH_KEY \
+            MCP_GOOGLE_CLIENT_ID MCP_GOOGLE_CLIENT_SECRET MCP_BETTER_AUTH_SECRET \
+            MCP_ALLOWED_GOOGLE_EMAIL MCP_DATABASE_PASSWORD MCP_HOSTNAME \
+            CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID CLOUDFLARE_TUNNEL_ID; do
+            if [[ -z "${!name}" ]]; then
+              configured=false
+              missing+=("$name")
+            fi
+          done
+          echo "configured=$configured" >> "$GITHUB_OUTPUT"
+          if [[ "$configured" != true ]]; then
+            printf 'Deployment is not configured yet. Missing GitHub Actions secrets: %s\n' "${missing[*]}" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Production deployment skipped because required Actions secrets are not configured."
+          fi
+
       - name: Configure deployment SSH
+        if: steps.deployment_config.outputs.configured == 'true'
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
         run: |
           set -euo pipefail
-          test -n "$VPS_HOST"
-          test -n "$VPS_SSH_KEY"
           install -m 700 -d ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
       - name: Upload versioned release
+        if: steps.deployment_config.outputs.configured == 'true'
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           RELEASE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          test -n "$VPS_USER"
           ssh "$VPS_USER@$VPS_HOST" \
             "test \"\$(id -u)\" = 0 && mkdir -p /opt/ai-berkshire-mcp/releases/$RELEASE_SHA"
           rsync -az --delete \
@@ -64,6 +99,7 @@ jobs:
             ./ "$VPS_USER@$VPS_HOST:/opt/ai-berkshire-mcp/releases/$RELEASE_SHA/"
 
       - name: Configure VPS runtime
+        if: steps.deployment_config.outputs.configured == 'true'
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -77,9 +113,6 @@ jobs:
           MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
         run: |
           set -euo pipefail
-          for name in MCP_GOOGLE_CLIENT_ID MCP_GOOGLE_CLIENT_SECRET MCP_BETTER_AUTH_SECRET MCP_ALLOWED_GOOGLE_EMAIL MCP_DATABASE_PASSWORD MCP_HOSTNAME; do
-            test -n "${!name}"
-          done
           encode() { printf '%s' "$1" | base64 -w 0; }
           google_id_b64=$(encode "$MCP_GOOGLE_CLIENT_ID")
           google_secret_b64=$(encode "$MCP_GOOGLE_CLIENT_SECRET")
@@ -101,6 +134,7 @@ jobs:
              /opt/ai-berkshire-mcp/releases/$RELEASE_SHA"
 
       - name: Activate release
+        if: steps.deployment_config.outputs.configured == 'true'
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -111,6 +145,7 @@ jobs:
              /opt/ai-berkshire-mcp/releases/$RELEASE_SHA '$RELEASE_SHA'"
 
       - name: Configure Cloudflare tunnel and DNS
+        if: steps.deployment_config.outputs.configured == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -121,6 +156,7 @@ jobs:
         run: deploy/scripts/configure-cloudflare-route.sh
 
       - name: Verify production health
+        if: steps.deployment_config.outputs.configured == 'true'
         env:
           MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
         run: |
@@ -129,6 +165,7 @@ jobs:
             "https://$MCP_HOSTNAME/healthz"
 
       - name: Deployment summary
+        if: steps.deployment_config.outputs.configured == 'true'
         env:
           MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
         run: |
