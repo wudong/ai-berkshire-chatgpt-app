@@ -269,7 +269,7 @@ function createBerkshireServer(): McpServer {
       const portfolio = await loadPortfolio();
       const review = reviewPortfolio(portfolio);
       return {
-        structuredContent: { review, portfolio },
+        structuredContent: { review },
         content: [
           {
             type: "text",
