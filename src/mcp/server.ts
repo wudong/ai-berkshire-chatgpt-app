@@ -1,10 +1,5 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import {
-  registerAppResource,
-  registerAppTool,
-  RESOURCE_MIME_TYPE,
-} from '@modelcontextprotocol/ext-apps/server';
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod';
 import {
@@ -16,6 +11,7 @@ import {
 import { researchRepository } from '../data.js';
 
 const PORTFOLIO_WIDGET_URI = 'ui://ai-berkshire/portfolio/v1.html';
+const RESOURCE_MIME_TYPE = 'text/html;profile=mcp-app';
 const decimalStringSchema = z.string().regex(/^-?(?:\d+(?:\.\d*)?|\.\d+)$/);
 
 const readOnlyAnnotations = {
@@ -51,11 +47,10 @@ export function createBerkshireMcpHandler() {
       },
     );
 
-    registerAppResource(
-      server,
+    server.registerResource(
       'portfolio-dashboard',
       PORTFOLIO_WIDGET_URI,
-      {},
+      { mimeType: RESOURCE_MIME_TYPE },
       async () => ({
         contents: [
           {
@@ -171,15 +166,17 @@ export function createBerkshireMcpHandler() {
       async (input) => asToolResult({ valuation: verifyValuation(input) }),
     );
 
-    registerAppTool(
-      server,
+    server.registerTool(
       'render_portfolio_dashboard',
       {
         description:
           'Render the read-only portfolio dashboard after the user asks to see or review portfolio structure.',
         inputSchema: z.object({}),
         annotations: readOnlyAnnotations,
-        _meta: { ui: { resourceUri: PORTFOLIO_WIDGET_URI } },
+        _meta: {
+          ui: { resourceUri: PORTFOLIO_WIDGET_URI },
+          'ui/resourceUri': PORTFOLIO_WIDGET_URI,
+        },
       },
       async () => {
         const snapshot = await researchRepository.getLatestSnapshot();
