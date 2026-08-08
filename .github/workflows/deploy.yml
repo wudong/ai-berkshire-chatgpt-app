@@ -4,6 +4,15 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Run a non-mutating credential/SSH canary or perform a deployment
+        required: true
+        default: canary
+        type: choice
+        options:
+          - canary
+          - deploy
 
 concurrency:
   group: ai-berkshire-mcp-production
@@ -11,6 +20,7 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   deploy:
@@ -19,6 +29,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve mode
+        id: mode
+        env:
+          REQUESTED_MODE: ${{ inputs.mode }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          mode=deploy
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            mode=${REQUESTED_MODE:-canary}
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -34,31 +57,102 @@ jobs:
       - name: Validate deployment scripts
         run: bash -n deploy/scripts/*.sh
 
-      - name: Check deployment configuration
+      - name: Check WIF configuration
+        id: wif_config
+        env:
+          WIF_PROVIDER: ${{ vars.AI_BERKSHIRE_DEPLOY_WIF_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.AI_BERKSHIRE_DEPLOY_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          configured=true
+          [[ -n "$WIF_PROVIDER" ]] || configured=false
+          [[ -n "$SERVICE_ACCOUNT" ]] || configured=false
+          echo "configured=$configured" >> "$GITHUB_OUTPUT"
+          if [[ "$configured" != true ]]; then
+            echo 'AI Berkshire WIF repository Variables are not configured yet; cloud canary/deploy steps are skipped.' >> "$GITHUB_STEP_SUMMARY"
+            echo '::notice::Set AI_BERKSHIRE_DEPLOY_WIF_PROVIDER and AI_BERKSHIRE_DEPLOY_SERVICE_ACCOUNT after applying the gcloud Terraform PR.'
+          fi
+
+      - name: Authenticate to Google Cloud
+        if: steps.wif_config.outputs.configured == 'true'
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: wudong-agent-master
+          workload_identity_provider: ${{ vars.AI_BERKSHIRE_DEPLOY_WIF_PROVIDER }}
+          service_account: ${{ vars.AI_BERKSHIRE_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Load runtime deployment credentials
+        if: steps.wif_config.outputs.configured == 'true'
+        id: gcp-secrets
+        uses: google-github-actions/get-secretmanager-secrets@v3
+        with:
+          secrets: |-
+            vps_ssh_key:wudong-agent-master/tt-players-hetzner-vps-deploy-key
+            cloudflare_account_id:wudong-agent-master/cloudflare-account-id
+            cloudflare_api_token:wudong-agent-master/ttlive-domain-cloudflare-tunnel-api-token
+            google_client_id:wudong-agent-master/mcp-internal-google-client-id
+            google_client_secret:wudong-agent-master/mcp-internal-google-client-secret
+            allowed_google_email:wudong-agent-master/mcp-internal-allowed-google-email
+
+      - name: Configure deployment SSH
+        if: steps.wif_config.outputs.configured == 'true'
+        env:
+          VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
+          VPS_HOST_KEY: ${{ vars.AI_BERKSHIRE_VPS_HOST_KEY }}
+          VPS_SSH_KEY: ${{ steps.gcp-secrets.outputs.vps_ssh_key }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_HOST_KEY"
+          test -n "$VPS_SSH_KEY"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s %s\n' "$VPS_HOST" "$VPS_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: WIF and VPS canary
+        if: steps.wif_config.outputs.configured == 'true' && steps.mode.outputs.mode == 'canary'
+        env:
+          VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
+          VPS_USER: ${{ vars.AI_BERKSHIRE_VPS_USER }}
+          GOOGLE_CLIENT_ID: ${{ steps.gcp-secrets.outputs.google_client_id }}
+          GOOGLE_CLIENT_SECRET: ${{ steps.gcp-secrets.outputs.google_client_secret }}
+          ALLOWED_GOOGLE_EMAIL: ${{ steps.gcp-secrets.outputs.allowed_google_email }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          test -n "$GOOGLE_CLIENT_ID"
+          test -n "$GOOGLE_CLIENT_SECRET"
+          test -n "$ALLOWED_GOOGLE_EMAIL"
+          ssh "$VPS_USER@$VPS_HOST" 'test "$(id -u)" = 0 && systemctl is-active cloudflared postgresql >/dev/null'
+          {
+            echo '### AI Berkshire delivery canary'
+            echo '- GitHub OIDC → GCP WIF: **passed**'
+            echo '- Explicit Secret Manager runtime allowlist: **passed**'
+            echo '- Shared internal MCP Google OAuth config: **passed**'
+            echo '- Pinned-host-key VPS SSH: **passed**'
+            echo '- VPS cloudflared/postgresql health: **passed**'
+            echo '- Production mutation: **none**'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check production configuration
+        if: steps.wif_config.outputs.configured == 'true' && steps.mode.outputs.mode == 'deploy'
         id: deployment_config
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          MCP_GOOGLE_CLIENT_ID: ${{ secrets.MCP_GOOGLE_CLIENT_ID }}
-          MCP_GOOGLE_CLIENT_SECRET: ${{ secrets.MCP_GOOGLE_CLIENT_SECRET }}
-          MCP_BETTER_AUTH_SECRET: ${{ secrets.MCP_BETTER_AUTH_SECRET }}
-          MCP_ALLOWED_GOOGLE_EMAIL: ${{ secrets.MCP_ALLOWED_GOOGLE_EMAIL }}
-          MCP_DATABASE_PASSWORD: ${{ secrets.MCP_DATABASE_PASSWORD }}
-          MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-          CLOUDFLARE_TUNNEL_ID: ${{ secrets.CLOUDFLARE_TUNNEL_ID }}
+          VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
+          VPS_USER: ${{ vars.AI_BERKSHIRE_VPS_USER }}
+          MCP_HOSTNAME: ${{ vars.AI_BERKSHIRE_MCP_HOSTNAME }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.AI_BERKSHIRE_CLOUDFLARE_ZONE_ID }}
+          CLOUDFLARE_TUNNEL_ID: ${{ vars.AI_BERKSHIRE_CLOUDFLARE_TUNNEL_ID }}
+          GOOGLE_CLIENT_ID: ${{ steps.gcp-secrets.outputs.google_client_id }}
+          GOOGLE_CLIENT_SECRET: ${{ steps.gcp-secrets.outputs.google_client_secret }}
+          ALLOWED_GOOGLE_EMAIL: ${{ steps.gcp-secrets.outputs.allowed_google_email }}
         run: |
           set -euo pipefail
           configured=true
           missing=()
-          for name in \
-            VPS_HOST VPS_USER VPS_SSH_KEY \
-            MCP_GOOGLE_CLIENT_ID MCP_GOOGLE_CLIENT_SECRET MCP_BETTER_AUTH_SECRET \
-            MCP_ALLOWED_GOOGLE_EMAIL MCP_DATABASE_PASSWORD MCP_HOSTNAME \
-            CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID CLOUDFLARE_TUNNEL_ID; do
+          for name in VPS_HOST VPS_USER MCP_HOSTNAME CLOUDFLARE_ZONE_ID CLOUDFLARE_TUNNEL_ID GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET ALLOWED_GOOGLE_EMAIL; do
             if [[ -z "${!name}" ]]; then
               configured=false
               missing+=("$name")
@@ -66,27 +160,15 @@ jobs:
           done
           echo "configured=$configured" >> "$GITHUB_OUTPUT"
           if [[ "$configured" != true ]]; then
-            printf 'Deployment is not configured yet. Missing GitHub Actions secrets: %s\n' "${missing[*]}" >> "$GITHUB_STEP_SUMMARY"
-            echo "::notice::Production deployment skipped because required Actions secrets are not configured."
+            printf 'Production deployment skipped. Missing required configuration: %s\n' "${missing[*]}" >> "$GITHUB_STEP_SUMMARY"
+            echo '::notice::The WIF canary can still be run while production configuration is incomplete.'
           fi
-
-      - name: Configure deployment SSH
-        if: steps.deployment_config.outputs.configured == 'true'
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-        run: |
-          set -euo pipefail
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
 
       - name: Upload versioned release
         if: steps.deployment_config.outputs.configured == 'true'
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
+          VPS_USER: ${{ vars.AI_BERKSHIRE_VPS_USER }}
           RELEASE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -101,43 +183,38 @@ jobs:
       - name: Configure VPS runtime
         if: steps.deployment_config.outputs.configured == 'true'
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
+          VPS_USER: ${{ vars.AI_BERKSHIRE_VPS_USER }}
           RELEASE_SHA: ${{ github.sha }}
-          MCP_GOOGLE_CLIENT_ID: ${{ secrets.MCP_GOOGLE_CLIENT_ID }}
-          MCP_GOOGLE_CLIENT_SECRET: ${{ secrets.MCP_GOOGLE_CLIENT_SECRET }}
-          MCP_BETTER_AUTH_SECRET: ${{ secrets.MCP_BETTER_AUTH_SECRET }}
-          MCP_ALLOWED_GOOGLE_EMAIL: ${{ secrets.MCP_ALLOWED_GOOGLE_EMAIL }}
-          MCP_ALLOWED_GOOGLE_SUB: ${{ secrets.MCP_ALLOWED_GOOGLE_SUB }}
-          MCP_DATABASE_PASSWORD: ${{ secrets.MCP_DATABASE_PASSWORD }}
-          MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
+          MCP_GOOGLE_CLIENT_ID: ${{ steps.gcp-secrets.outputs.google_client_id }}
+          MCP_GOOGLE_CLIENT_SECRET: ${{ steps.gcp-secrets.outputs.google_client_secret }}
+          MCP_ALLOWED_GOOGLE_EMAIL: ${{ steps.gcp-secrets.outputs.allowed_google_email }}
+          MCP_ALLOWED_GOOGLE_SUB: ${{ vars.AI_BERKSHIRE_ALLOWED_GOOGLE_SUB }}
+          MCP_HOSTNAME: ${{ vars.AI_BERKSHIRE_MCP_HOSTNAME }}
         run: |
           set -euo pipefail
+          umask 077
+          local_patch=$(mktemp)
+          remote_patch="/tmp/ai-berkshire-runtime-${GITHUB_RUN_ID}"
           encode() { printf '%s' "$1" | base64 -w 0; }
-          google_id_b64=$(encode "$MCP_GOOGLE_CLIENT_ID")
-          google_secret_b64=$(encode "$MCP_GOOGLE_CLIENT_SECRET")
-          auth_secret_b64=$(encode "$MCP_BETTER_AUTH_SECRET")
-          allowed_email_b64=$(encode "$MCP_ALLOWED_GOOGLE_EMAIL")
-          allowed_sub_b64=$(encode "$MCP_ALLOWED_GOOGLE_SUB")
-          database_password_b64=$(encode "$MCP_DATABASE_PASSWORD")
-          hostname_b64=$(encode "$MCP_HOSTNAME")
-
+          {
+            printf 'GOOGLE_CLIENT_ID_B64=%s\n' "$(encode "$MCP_GOOGLE_CLIENT_ID")"
+            printf 'GOOGLE_CLIENT_SECRET_B64=%s\n' "$(encode "$MCP_GOOGLE_CLIENT_SECRET")"
+            printf 'ALLOWED_GOOGLE_EMAIL_B64=%s\n' "$(encode "$MCP_ALLOWED_GOOGLE_EMAIL")"
+            printf 'ALLOWED_GOOGLE_SUB_B64=%s\n' "$(encode "$MCP_ALLOWED_GOOGLE_SUB")"
+            printf 'MCP_HOSTNAME_B64=%s\n' "$(encode "$MCP_HOSTNAME")"
+          } > "$local_patch"
+          scp "$local_patch" "$VPS_USER@$VPS_HOST:$remote_patch"
+          rm -f "$local_patch"
           ssh "$VPS_USER@$VPS_HOST" \
-            "BERKSHIRE_GOOGLE_CLIENT_ID_B64='$google_id_b64' \
-             BERKSHIRE_GOOGLE_CLIENT_SECRET_B64='$google_secret_b64' \
-             BERKSHIRE_BETTER_AUTH_SECRET_B64='$auth_secret_b64' \
-             BERKSHIRE_ALLOWED_GOOGLE_EMAIL_B64='$allowed_email_b64' \
-             BERKSHIRE_ALLOWED_GOOGLE_SUB_B64='$allowed_sub_b64' \
-             BERKSHIRE_DATABASE_PASSWORD_B64='$database_password_b64' \
-             BERKSHIRE_MCP_HOSTNAME_B64='$hostname_b64' \
-             bash /opt/ai-berkshire-mcp/releases/$RELEASE_SHA/deploy/scripts/write-vps-config.sh \
-             /opt/ai-berkshire-mcp/releases/$RELEASE_SHA"
+            "bash /opt/ai-berkshire-mcp/releases/$RELEASE_SHA/deploy/scripts/write-vps-config.sh \
+             /opt/ai-berkshire-mcp/releases/$RELEASE_SHA '$remote_patch'"
 
       - name: Activate release
         if: steps.deployment_config.outputs.configured == 'true'
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
+          VPS_USER: ${{ vars.AI_BERKSHIRE_VPS_USER }}
           RELEASE_SHA: ${{ github.sha }}
         run: |
           ssh "$VPS_USER@$VPS_HOST" \
@@ -147,18 +224,18 @@ jobs:
       - name: Configure Cloudflare tunnel and DNS
         if: steps.deployment_config.outputs.configured == 'true'
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-          CLOUDFLARE_TUNNEL_ID: ${{ secrets.CLOUDFLARE_TUNNEL_ID }}
-          MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
+          CLOUDFLARE_API_TOKEN: ${{ steps.gcp-secrets.outputs.cloudflare_api_token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.gcp-secrets.outputs.cloudflare_account_id }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.AI_BERKSHIRE_CLOUDFLARE_ZONE_ID }}
+          CLOUDFLARE_TUNNEL_ID: ${{ vars.AI_BERKSHIRE_CLOUDFLARE_TUNNEL_ID }}
+          MCP_HOSTNAME: ${{ vars.AI_BERKSHIRE_MCP_HOSTNAME }}
           MCP_ORIGIN_SERVICE: http://127.0.0.1:3020
         run: deploy/scripts/configure-cloudflare-route.sh
 
       - name: Verify production health
         if: steps.deployment_config.outputs.configured == 'true'
         env:
-          MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
+          MCP_HOSTNAME: ${{ vars.AI_BERKSHIRE_MCP_HOSTNAME }}
         run: |
           curl --fail --silent --show-error \
             --retry 20 --retry-delay 5 --retry-all-errors \
@@ -167,7 +244,7 @@ jobs:
       - name: Deployment summary
         if: steps.deployment_config.outputs.configured == 'true'
         env:
-          MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
+          MCP_HOSTNAME: ${{ vars.AI_BERKSHIRE_MCP_HOSTNAME }}
         run: |
           {
             echo '### AI Berkshire MCP'
@@ -177,4 +254,19 @@ jobs:
             echo "- Endpoint: \`https://$MCP_HOSTNAME/mcp\`"
             echo '- Local origin: `http://127.0.0.1:3020`'
             echo '- Auth: Better Auth MCP OAuth + Google provider'
+            echo '- Google OAuth config: shared internal MCP values from GCP Secret Manager'
+            echo '- CI credentials: GitHub OIDC → GCP WIF → Secret Manager'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean temporary credentials
+        if: always()
+        env:
+          VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
+          VPS_USER: ${{ vars.AI_BERKSHIRE_VPS_USER }}
+          REMOTE_PATCH: /tmp/ai-berkshire-runtime-${{ github.run_id }}
+        run: |
+          if [[ -f ~/.ssh/id_ed25519 && -n "${VPS_HOST:-}" && -n "${VPS_USER:-}" ]]; then
+            ssh "$VPS_USER@$VPS_HOST" "rm -f '$REMOTE_PATCH'" || true
+          fi
+          rm -f ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          find "${RUNNER_TEMP:-/tmp}" -maxdepth 1 -type f -name 'gha-creds-*.json' -delete 2>/dev/null || true

@@ -87,7 +87,15 @@ The custom `investing:access` scope is issued by this MCP service. It is not a G
 
 ### Google OAuth client
 
-Create a Google OAuth **Web application** client, or add the new callback to an existing client, with this authorised redirect URI:
+Production reuses the internal MCP Google OAuth configuration already stored in GCP Secret Manager:
+
+- `mcp-internal-google-client-id`;
+- `mcp-internal-google-client-secret`;
+- `mcp-internal-allowed-google-email`.
+
+The deployment workflow reads these values only after GitHub OIDC has been exchanged through the AI Berkshire WIF provider. They are not stored as GitHub repository Variables or GitHub Actions secrets.
+
+The shared Google OAuth **Web application** client must include the AI Berkshire callback as an authorised redirect URI:
 
 ```text
 https://<MCP_HOSTNAME>/api/auth/callback/google
@@ -105,7 +113,7 @@ The MCP resource is:
 https://<MCP_HOSTNAME>/mcp
 ```
 
-For isolation between services, a separate Google OAuth client is preferred even though Google allows multiple redirect URIs on one web client.
+The existing internal MCP callback can remain registered alongside the AI Berkshire callback; one Google web client may have multiple authorised redirect URIs.
 
 ## US-stock source policy
 
@@ -202,52 +210,78 @@ For a real OAuth/MCP client connection, `BETTER_AUTH_URL` and `MCP_RESOURCE_URL`
 
 ## Automated VPS deployment
 
-Deployment intentionally mirrors the existing gcloud MCP delivery model.
+Deployment mirrors the `tt-players` production credential model: GitHub Actions receives a short-lived identity through Google Workload Identity Federation, and confidential delivery/runtime values are loaded from Google Secret Manager. Long-lived production credentials are not stored in this repository's GitHub Actions secrets.
 
-Every push to `main` runs the quality gate. The production workflow then:
+Every push to `main` runs the quality gate. Production deploy mode then:
 
 1. installs the committed Bun dependency graph with `bun install --frozen-lockfile`;
 2. runs TypeScript checks, Bun tests, server/widget builds, and deployment-script validation;
-3. uploads a versioned release to `/opt/ai-berkshire-mcp/releases/<commit-sha>`;
-4. provisions a dedicated `ai-berkshire-mcp` Unix service user;
-5. provisions the dedicated local PostgreSQL role/database `ai_berkshire_mcp`;
-6. writes the root-owned runtime environment under `/etc/ai-berkshire-mcp`;
-7. runs Better Auth migrations;
-8. atomically switches `/opt/ai-berkshire-mcp/current` while retaining `previous`;
-9. restarts the hardened `ai-berkshire-mcp.service` systemd unit;
-10. verifies `http://127.0.0.1:3020/healthz` and automatically restores the previous release if the new release fails;
-11. adds/updates this hostname in the existing Cloudflare tunnel without replacing unrelated ingress entries;
-12. creates/updates the proxied DNS CNAME;
-13. verifies `https://<MCP_HOSTNAME>/healthz` externally.
+3. authenticates GitHub Actions to `wudong-agent-master` with OIDC/WIF;
+4. reads the explicitly allowlisted VPS, Cloudflare, and internal MCP Google OAuth values from Secret Manager;
+5. connects to the VPS using the repository-configured pinned SSH host key;
+6. uploads a versioned release to `/opt/ai-berkshire-mcp/releases/<commit-sha>`;
+7. provisions a dedicated `ai-berkshire-mcp` Unix service user and local PostgreSQL role/database;
+8. writes the root-owned runtime environment under `/etc/ai-berkshire-mcp`;
+9. generates the PostgreSQL password and Better Auth secret once on the VPS, rather than transporting them through CI;
+10. runs Better Auth migrations;
+11. atomically switches `/opt/ai-berkshire-mcp/current` while retaining `previous`;
+12. restarts the hardened `ai-berkshire-mcp.service` systemd unit;
+13. verifies `http://127.0.0.1:3020/healthz` and automatically restores the previous release if the new release fails;
+14. adds/updates this hostname in the existing Cloudflare tunnel without replacing unrelated ingress entries;
+15. creates/updates the proxied DNS CNAME and verifies `https://<MCP_HOSTNAME>/healthz` externally.
 
-A manual rollback workflow is provided in `.github/workflows/rollback.yml`.
+A manual rollback workflow is provided in `.github/workflows/rollback.yml` and uses a separate, narrower WIF reader.
 
-### Required GitHub Actions secrets
+### Safe WIF/VPS canary
 
-Shared VPS deployment:
+Manual `workflow_dispatch` defaults to `mode=canary`. The canary performs no production mutation. It proves:
 
-- `VPS_HOST`
-- `VPS_USER` — must have root provisioning/systemd access; the mirrored pipeline expects root
-- `VPS_SSH_KEY`
+- GitHub OIDC can exchange into the AI Berkshire WIF provider;
+- the deploy reader can read its exact Secret Manager runtime allowlist, including the shared internal MCP Google OAuth values;
+- the shared VPS deployment key works with the pinned host key;
+- `cloudflared` and `postgresql` are active on the VPS.
 
-Google / MCP authentication:
+It does not upload a release, write runtime configuration, restart services, or modify Cloudflare.
 
-- `MCP_GOOGLE_CLIENT_ID`
-- `MCP_GOOGLE_CLIENT_SECRET`
-- `MCP_BETTER_AUTH_SECRET`
-- `MCP_ALLOWED_GOOGLE_EMAIL`
-- `MCP_ALLOWED_GOOGLE_SUB` — optional but recommended
-- `MCP_DATABASE_PASSWORD`
-- `MCP_HOSTNAME` — bare hostname only, for example `investing-mcp.example.com`
+### GCloud dependency
 
-Cloudflare:
+The repository-specific WIF/IAM boundary is managed in `wudong/gcloud`. As with TT Players, Terraform grants the deploy workload `roles/secretmanager.secretAccessor` only on an explicit list of pre-existing Secret Manager entries. Secret values and versions remain outside Terraform state.
 
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-- `CLOUDFLARE_ZONE_ID`
-- `CLOUDFLARE_TUNNEL_ID`
+The deploy reader uses:
 
-The Cloudflare tunnel is shared safely: the deployment script changes only the ingress entry for `MCP_HOSTNAME` and leaves unrelated hostnames untouched.
+- `tt-players-hetzner-vps-deploy-key`;
+- `cloudflare-account-id`;
+- `ttlive-domain-cloudflare-tunnel-api-token`;
+- `mcp-internal-google-client-id`;
+- `mcp-internal-google-client-secret`;
+- `mcp-internal-allowed-google-email`.
+
+The rollback reader can read only `tt-players-hetzner-vps-deploy-key`.
+
+The earlier `ai-berkshire-google-oauth-client-secret` container remains managed temporarily during migration but is no longer in the deploy reader allowlist and is not consumed by the application workflow.
+
+### Required repository Variables
+
+WIF outputs from the GCloud Terraform apply:
+
+- `AI_BERKSHIRE_DEPLOY_WIF_PROVIDER`;
+- `AI_BERKSHIRE_DEPLOY_SERVICE_ACCOUNT`;
+- `AI_BERKSHIRE_ROLLBACK_WIF_PROVIDER`;
+- `AI_BERKSHIRE_ROLLBACK_SERVICE_ACCOUNT`.
+
+Shared/public deployment configuration:
+
+- `AI_BERKSHIRE_VPS_HOST`;
+- `AI_BERKSHIRE_VPS_USER`;
+- `AI_BERKSHIRE_VPS_HOST_KEY`;
+- `AI_BERKSHIRE_MCP_HOSTNAME`;
+- `AI_BERKSHIRE_CLOUDFLARE_ZONE_ID`;
+- `AI_BERKSHIRE_CLOUDFLARE_TUNNEL_ID`;
+- `AI_BERKSHIRE_ALLOWED_GOOGLE_SUB` — optional.
+
+Google client ID, client secret, and allowed email are intentionally absent from repository Variables because they are loaded from GCP Secret Manager.
+
+The Cloudflare tunnel is shared safely: the deployment script changes only the ingress entry for `AI_BERKSHIRE_MCP_HOSTNAME` and leaves unrelated hostnames untouched.
 
 ## Production isolation
 
@@ -261,7 +295,7 @@ This service intentionally does not share application state with the VPS diagnos
 - PostgreSQL database/role: `ai_berkshire_mcp`;
 - loopback port: `3020`.
 
-It may share the same VPS and Cloudflare tunnel infrastructure.
+It may share the same VPS, Cloudflare tunnel, and internal Google OAuth client configuration.
 
 ## Safety boundary
 
