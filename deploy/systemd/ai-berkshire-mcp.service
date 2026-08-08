@@ -1,0 +1,36 @@
+[Unit]
+Description=AI Berkshire MCP
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ai-berkshire-mcp
+Group=ai-berkshire-mcp
+WorkingDirectory=/opt/ai-berkshire-mcp/current
+EnvironmentFile=/etc/ai-berkshire-mcp/app.env
+Environment=HOME=/var/lib/ai-berkshire-mcp
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/bin/bun run src/main.ts
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/etc/ai-berkshire-mcp
+ReadWritePaths=/var/lib/ai-berkshire-mcp
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

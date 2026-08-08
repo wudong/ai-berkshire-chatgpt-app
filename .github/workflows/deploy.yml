@@ -1,0 +1,148 @@
+name: Deploy AI Berkshire MCP
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ai-berkshire-mcp-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install dependencies
+        run: |
+          if [[ -f bun.lock ]]; then
+            bun install --frozen-lockfile
+          else
+            bun install
+          fi
+
+      - name: Quality gate and build
+        run: bun run check
+
+      - name: Validate deployment scripts
+        run: bash -n deploy/scripts/*.sh
+
+      - name: Configure deployment SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_SSH_KEY"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Upload versioned release
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_USER"
+          ssh "$VPS_USER@$VPS_HOST" \
+            "test \"\$(id -u)\" = 0 && mkdir -p /opt/ai-berkshire-mcp/releases/$RELEASE_SHA"
+          rsync -az --delete \
+            --exclude .git \
+            --exclude node_modules \
+            --exclude .env \
+            ./ "$VPS_USER@$VPS_HOST:/opt/ai-berkshire-mcp/releases/$RELEASE_SHA/"
+
+      - name: Configure VPS runtime
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          RELEASE_SHA: ${{ github.sha }}
+          MCP_GOOGLE_CLIENT_ID: ${{ secrets.MCP_GOOGLE_CLIENT_ID }}
+          MCP_GOOGLE_CLIENT_SECRET: ${{ secrets.MCP_GOOGLE_CLIENT_SECRET }}
+          MCP_BETTER_AUTH_SECRET: ${{ secrets.MCP_BETTER_AUTH_SECRET }}
+          MCP_ALLOWED_GOOGLE_EMAIL: ${{ secrets.MCP_ALLOWED_GOOGLE_EMAIL }}
+          MCP_ALLOWED_GOOGLE_SUB: ${{ secrets.MCP_ALLOWED_GOOGLE_SUB }}
+          MCP_DATABASE_PASSWORD: ${{ secrets.MCP_DATABASE_PASSWORD }}
+          MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
+        run: |
+          set -euo pipefail
+          for name in MCP_GOOGLE_CLIENT_ID MCP_GOOGLE_CLIENT_SECRET MCP_BETTER_AUTH_SECRET MCP_ALLOWED_GOOGLE_EMAIL MCP_DATABASE_PASSWORD MCP_HOSTNAME; do
+            test -n "${!name}"
+          done
+          encode() { printf '%s' "$1" | base64 -w 0; }
+          google_id_b64=$(encode "$MCP_GOOGLE_CLIENT_ID")
+          google_secret_b64=$(encode "$MCP_GOOGLE_CLIENT_SECRET")
+          auth_secret_b64=$(encode "$MCP_BETTER_AUTH_SECRET")
+          allowed_email_b64=$(encode "$MCP_ALLOWED_GOOGLE_EMAIL")
+          allowed_sub_b64=$(encode "$MCP_ALLOWED_GOOGLE_SUB")
+          database_password_b64=$(encode "$MCP_DATABASE_PASSWORD")
+          hostname_b64=$(encode "$MCP_HOSTNAME")
+
+          ssh "$VPS_USER@$VPS_HOST" \
+            "BERKSHIRE_GOOGLE_CLIENT_ID_B64='$google_id_b64' \
+             BERKSHIRE_GOOGLE_CLIENT_SECRET_B64='$google_secret_b64' \
+             BERKSHIRE_BETTER_AUTH_SECRET_B64='$auth_secret_b64' \
+             BERKSHIRE_ALLOWED_GOOGLE_EMAIL_B64='$allowed_email_b64' \
+             BERKSHIRE_ALLOWED_GOOGLE_SUB_B64='$allowed_sub_b64' \
+             BERKSHIRE_DATABASE_PASSWORD_B64='$database_password_b64' \
+             BERKSHIRE_MCP_HOSTNAME_B64='$hostname_b64' \
+             bash /opt/ai-berkshire-mcp/releases/$RELEASE_SHA/deploy/scripts/write-vps-config.sh \
+             /opt/ai-berkshire-mcp/releases/$RELEASE_SHA"
+
+      - name: Activate release
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          ssh "$VPS_USER@$VPS_HOST" \
+            "bash /opt/ai-berkshire-mcp/releases/$RELEASE_SHA/deploy/scripts/deploy-vps-release.sh \
+             /opt/ai-berkshire-mcp/releases/$RELEASE_SHA '$RELEASE_SHA'"
+
+      - name: Configure Cloudflare tunnel and DNS
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          CLOUDFLARE_TUNNEL_ID: ${{ secrets.CLOUDFLARE_TUNNEL_ID }}
+          MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
+          MCP_ORIGIN_SERVICE: http://127.0.0.1:3020
+        run: deploy/scripts/configure-cloudflare-route.sh
+
+      - name: Verify production health
+        env:
+          MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
+        run: |
+          curl --fail --silent --show-error \
+            --retry 20 --retry-delay 5 --retry-all-errors \
+            "https://$MCP_HOSTNAME/healthz"
+
+      - name: Deployment summary
+        env:
+          MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
+        run: |
+          {
+            echo '### AI Berkshire MCP'
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo '- Runtime: Bun'
+            echo '- Service: `ai-berkshire-mcp.service`'
+            echo "- Endpoint: \`https://$MCP_HOSTNAME/mcp\`"
+            echo '- Local origin: `http://127.0.0.1:3020`'
+            echo '- Auth: Better Auth MCP OAuth + Google provider'
+          } >> "$GITHUB_STEP_SUMMARY"

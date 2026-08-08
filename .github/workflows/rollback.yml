@@ -1,0 +1,47 @@
+name: Roll back AI Berkshire MCP
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ai-berkshire-mcp-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure deployment SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_SSH_KEY"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Roll back current release
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          test -n "$VPS_USER"
+          ssh "$VPS_USER@$VPS_HOST" \
+            'bash /opt/ai-berkshire-mcp/current/deploy/scripts/rollback-vps-release.sh'
+
+      - name: Verify production health
+        env:
+          MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
+        run: |
+          test -n "$MCP_HOSTNAME"
+          curl --fail --silent --show-error \
+            --retry 20 --retry-delay 5 --retry-all-errors \
+            "https://$MCP_HOSTNAME/healthz"
