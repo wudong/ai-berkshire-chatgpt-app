@@ -26,12 +26,7 @@ jobs:
           bun-version-file: .bun-version
 
       - name: Install dependencies
-        run: |
-          if [[ -f bun.lock ]]; then
-            bun install --frozen-lockfile
-          else
-            bun install
-          fi
+        run: bun install --frozen-lockfile
 
       - name: Quality gate and build
         run: bun run check
