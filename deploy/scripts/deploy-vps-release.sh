@@ -23,6 +23,7 @@ if [[ "$release_dir" != "$root_dir"/releases/* || ! -d "$release_dir" ]]; then
 fi
 [[ -x "$bun_bin" ]] || { echo "Bun is missing at $bun_bin" >&2; exit 1; }
 [[ -f "$release_dir/package.json" ]] || { echo "Release is missing package.json" >&2; exit 1; }
+[[ -f "$release_dir/bun.lock" ]] || { echo "Release is missing bun.lock" >&2; exit 1; }
 [[ -f "$release_dir/web/dist/widget.js" ]] || { echo "Release is missing built widget" >&2; exit 1; }
 
 current_release=""
@@ -31,11 +32,7 @@ if [[ -L "$current_link" ]]; then
 fi
 
 cd "$release_dir"
-if [[ -f bun.lock ]]; then
-  "$bun_bin" install --frozen-lockfile --production
-else
-  "$bun_bin" install --production
-fi
+"$bun_bin" install --frozen-lockfile --production
 chown -R ai-berkshire-mcp:ai-berkshire-mcp "$release_dir"
 chmod -R u+rwX,go-rwx "$release_dir"
 
