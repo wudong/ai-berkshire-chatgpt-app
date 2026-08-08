@@ -9,39 +9,64 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   rollback:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: wudong-agent-master
+          workload_identity_provider: ${{ vars.AI_BERKSHIRE_ROLLBACK_WIF_PROVIDER }}
+          service_account: ${{ vars.AI_BERKSHIRE_ROLLBACK_SERVICE_ACCOUNT }}
+
+      - name: Load VPS deploy key
+        id: gcp-secrets
+        uses: google-github-actions/get-secretmanager-secrets@v3
+        with:
+          secrets: |-
+            vps_ssh_key:wudong-agent-master/tt-players-hetzner-vps-deploy-key
+
       - name: Configure deployment SSH
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
+          VPS_HOST_KEY: ${{ vars.AI_BERKSHIRE_VPS_HOST_KEY }}
+          VPS_SSH_KEY: ${{ steps.gcp-secrets.outputs.vps_ssh_key }}
         run: |
           set -euo pipefail
           test -n "$VPS_HOST"
+          test -n "$VPS_HOST_KEY"
           test -n "$VPS_SSH_KEY"
           install -m 700 -d ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          printf '%s %s\n' "$VPS_HOST" "$VPS_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
 
       - name: Roll back current release
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
+          VPS_USER: ${{ vars.AI_BERKSHIRE_VPS_USER }}
         run: |
+          set -euo pipefail
           test -n "$VPS_USER"
           ssh "$VPS_USER@$VPS_HOST" \
             'bash /opt/ai-berkshire-mcp/current/deploy/scripts/rollback-vps-release.sh'
 
       - name: Verify production health
         env:
-          MCP_HOSTNAME: ${{ secrets.MCP_HOSTNAME }}
+          MCP_HOSTNAME: ${{ vars.AI_BERKSHIRE_MCP_HOSTNAME }}
         run: |
           test -n "$MCP_HOSTNAME"
           curl --fail --silent --show-error \
             --retry 20 --retry-delay 5 --retry-all-errors \
             "https://$MCP_HOSTNAME/healthz"
+
+      - name: Clean temporary credentials
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          find "${RUNNER_TEMP:-/tmp}" -maxdepth 1 -type f -name 'gha-creds-*.json' -delete 2>/dev/null || true
