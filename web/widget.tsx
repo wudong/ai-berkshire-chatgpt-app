@@ -1,49 +1,55 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-type ThesisStatus = "GREEN" | "YELLOW" | "RED" | "BROKEN";
-
 type Holding = {
+  instrumentId: string;
   ticker: string;
-  company: string;
-  weightPct: number;
-  thesisStatus: ThesisStatus;
-  conviction: number;
-  ownerEarningsYieldPct?: number;
-  expectedGrowthPct?: number;
+  name: string;
+  securityType: "equity" | "etf" | "cash" | "other";
+  quantity: string;
+  tradingCurrency: string;
+  referenceMarketValueBase: string;
 };
 
-type Portfolio = {
+type PortfolioSnapshot = {
+  snapshotId: string;
   asOf: string;
   baseCurrency: string;
-  cashPct: number;
   holdings: Holding[];
-  notes?: string[];
+  cash: Array<{ currency: string; amountBase: string }>;
+  fixture: boolean;
+  warnings: string[];
 };
 
-type Review = {
-  defaultAction: "NO_ACTION";
-  concentration: {
-    largestHoldingPct: number;
-    top3Pct: number;
-    holdingCount: number;
-    cashPct: number;
-  };
-  alerts: Array<{
-    severity: "INFO" | "WATCH" | "HIGH";
-    ticker?: string;
-    message: string;
+type PortfolioDiagnostics = {
+  snapshotId: string;
+  asOf: string;
+  baseCurrency: string;
+  totalReferenceValueBase: string;
+  investedReferenceValueBase: string;
+  cashReferenceValueBase: string;
+  cashWeightPct: string;
+  holdings: Array<{
+    instrumentId: string;
+    ticker: string;
+    weightPct: string;
   }>;
+  largestHoldingPct: string;
+  top3HoldingPct: string;
+  holdingCount: number;
+  warnings: string[];
+  calculationVersion: string;
 };
 
 type ToolPayload = {
   structuredContent?: {
-    portfolio?: Portfolio;
-    review?: Review;
+    snapshot?: PortfolioSnapshot;
+    diagnostics?: PortfolioDiagnostics;
   };
 };
 
 let rpcId = 0;
+let lastToolPayload: ToolPayload | undefined;
 const pending = new Map<
   number,
   { resolve: (value: any) => void; reject: (reason?: any) => void }
@@ -79,8 +85,9 @@ window.addEventListener(
     }
 
     if (message.method === "ui/notifications/tool-result") {
+      lastToolPayload = message.params as ToolPayload;
       for (const subscriber of toolResultSubscribers) {
-        subscriber(message.params as ToolPayload);
+        subscriber(lastToolPayload);
       }
     }
   },
@@ -101,90 +108,87 @@ async function callTool(name: string, args: Record<string, unknown> = {}) {
   return rpcRequest("tools/call", { name, arguments: args });
 }
 
-function statusMark(status: ThesisStatus) {
-  return {
-    GREEN: "●",
-    YELLOW: "▲",
-    RED: "!",
-    BROKEN: "×"
-  }[status];
-}
-
 const css = `
-:root { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+:root { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: light dark; }
 * { box-sizing: border-box; }
 body { margin: 0; background: transparent; }
 .shell { padding: 16px; max-width: 900px; margin: 0 auto; }
 .header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 14px; }
 .title { font-size: 18px; font-weight: 700; margin: 0; }
 .sub { font-size: 12px; opacity: .68; margin-top: 4px; }
+.fixture { display:inline-block; margin-top:6px; border:1px solid rgba(127,127,127,.28); border-radius:999px; padding:3px 7px; font-size:11px; }
 .grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; margin-bottom: 12px; }
 .card { border: 1px solid rgba(127,127,127,.22); border-radius: 12px; padding: 12px; }
 .metric { font-size: 22px; font-weight: 700; }
 .label { font-size: 11px; opacity: .62; text-transform: uppercase; letter-spacing: .06em; }
-.row { display: grid; grid-template-columns: 88px 1fr 72px 90px 80px; gap: 8px; align-items: center; padding: 10px 0; border-top: 1px solid rgba(127,127,127,.14); }
+.row { display: grid; grid-template-columns: 88px 1fr 90px 82px; gap: 8px; align-items: center; padding: 10px 0; border-top: 1px solid rgba(127,127,127,.14); }
 .row:first-child { border-top: 0; }
 .ticker { font-weight: 700; }
 .company { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .right { text-align: right; }
-.alert { margin-top: 8px; border: 1px solid rgba(127,127,127,.22); border-radius: 10px; padding: 10px; font-size: 12px; line-height: 1.4; }
-.alert strong { margin-right: 6px; }
+.warning { margin-top: 8px; border: 1px solid rgba(127,127,127,.22); border-radius: 10px; padding: 10px; font-size: 12px; line-height: 1.4; }
 button { border: 1px solid rgba(127,127,127,.28); border-radius: 9px; padding: 7px 10px; background: transparent; color: inherit; cursor: pointer; }
 button:disabled { opacity: .5; cursor: default; }
 .empty { padding: 18px; text-align: center; opacity: .7; }
-@media (max-width: 650px) { .grid { grid-template-columns: 1fr; } .row { grid-template-columns: 72px 1fr 58px; } .hide-small { display:none; } }
+@media (max-width: 650px) { .grid { grid-template-columns: 1fr; } .row { grid-template-columns: 72px 1fr 64px; } .hide-small { display:none; } }
 `;
 
 function App() {
-  const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
-  const [review, setReview] = useState<Review | null>(null);
+  const [snapshot, setSnapshot] = useState<PortfolioSnapshot | null>(null);
+  const [diagnostics, setDiagnostics] = useState<PortfolioDiagnostics | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const applyPayload = (payload: ToolPayload | undefined) => {
     const content = payload?.structuredContent;
-    if (content?.portfolio) setPortfolio(content.portfolio);
-    if (content?.review) setReview(content.review);
+    if (content?.snapshot) setSnapshot(content.snapshot);
+    if (content?.diagnostics) setDiagnostics(content.diagnostics);
+  };
+
+  const refresh = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const [snapshotResult, diagnosticsResult] = await Promise.all([
+        callTool("get_portfolio_snapshot"),
+        callTool("run_portfolio_diagnostics")
+      ]);
+      applyPayload(snapshotResult);
+      applyPayload(diagnosticsResult);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to refresh dashboard");
+    } finally {
+      setBusy(false);
+    }
   };
 
   useEffect(() => {
     const subscriber = (payload: ToolPayload) => applyPayload(payload);
     toolResultSubscribers.add(subscriber);
+    applyPayload(lastToolPayload);
 
-    void (async () => {
-      try {
-        const response = await callTool("get_portfolio");
-        applyPayload(response);
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "Unable to load portfolio");
-      }
-    })();
+    if (!lastToolPayload?.structuredContent?.snapshot) {
+      void refresh();
+    }
 
     return () => {
       toolResultSubscribers.delete(subscriber);
     };
   }, []);
 
-  const investedPct = useMemo(
-    () => portfolio?.holdings.reduce((sum, holding) => sum + holding.weightPct, 0) ?? 0,
-    [portfolio]
+  const weightByInstrument = useMemo(
+    () =>
+      new Map(
+        diagnostics?.holdings.map((holding) => [
+          holding.instrumentId,
+          holding.weightPct
+        ]) ?? []
+      ),
+    [diagnostics]
   );
 
-  const runReview = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await callTool("review_portfolio");
-      applyPayload(response);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Portfolio review failed");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (!portfolio) {
-    return <div className="empty">{error ?? "Loading portfolio…"}</div>;
+  if (!snapshot) {
+    return <div className="empty">{error ?? "Loading portfolio snapshot…"}</div>;
   }
 
   return (
@@ -193,37 +197,34 @@ function App() {
       <div className="header">
         <div>
           <h1 className="title">AI Berkshire Portfolio</h1>
-          <div className="sub">Snapshot {portfolio.asOf} · {portfolio.baseCurrency} · local data only</div>
+          <div className="sub">Snapshot {snapshot.asOf} · base {snapshot.baseCurrency}</div>
+          {snapshot.fixture ? <span className="fixture">Fictional fixture · not live data</span> : null}
         </div>
-        <button onClick={runReview} disabled={busy}>{busy ? "Reviewing…" : "Run review"}</button>
+        <button onClick={() => void refresh()} disabled={busy}>{busy ? "Refreshing…" : "Refresh"}</button>
       </div>
 
       <div className="grid">
-        <div className="card"><div className="label">Invested</div><div className="metric">{investedPct.toFixed(1)}%</div></div>
-        <div className="card"><div className="label">Cash</div><div className="metric">{portfolio.cashPct.toFixed(1)}%</div></div>
-        <div className="card"><div className="label">Default action</div><div className="metric">{review?.defaultAction ?? "—"}</div></div>
+        <div className="card"><div className="label">Cash weight</div><div className="metric">{diagnostics ? `${diagnostics.cashWeightPct}%` : "—"}</div></div>
+        <div className="card"><div className="label">Largest holding</div><div className="metric">{diagnostics ? `${diagnostics.largestHoldingPct}%` : "—"}</div></div>
+        <div className="card"><div className="label">Top 3 holdings</div><div className="metric">{diagnostics ? `${diagnostics.top3HoldingPct}%` : "—"}</div></div>
       </div>
 
       <div className="card">
-        {portfolio.holdings.map((holding) => (
-          <div className="row" key={holding.ticker}>
+        {snapshot.holdings.map((holding) => (
+          <div className="row" key={holding.instrumentId}>
             <div className="ticker">{holding.ticker}</div>
-            <div className="company">{holding.company}</div>
-            <div className="right">{holding.weightPct.toFixed(1)}%</div>
-            <div className="right hide-small">{statusMark(holding.thesisStatus)} {holding.thesisStatus}</div>
-            <div className="right hide-small">{holding.conviction}/10</div>
+            <div className="company">{holding.name}</div>
+            <div className="right">{weightByInstrument.get(holding.instrumentId) ? `${weightByInstrument.get(holding.instrumentId)}%` : "—"}</div>
+            <div className="right hide-small">{holding.securityType}</div>
           </div>
         ))}
       </div>
 
-      {review?.alerts.map((alert, index) => (
-        <div className="alert" key={`${alert.ticker ?? "portfolio"}-${index}`}>
-          <strong>{alert.severity}{alert.ticker ? ` · ${alert.ticker}` : ""}</strong>
-          {alert.message}
-        </div>
+      {snapshot.warnings.map((warning, index) => (
+        <div className="warning" key={index}>{warning}</div>
       ))}
-
-      {error ? <div className="alert"><strong>Error</strong>{error}</div> : null}
+      {error ? <div className="warning"><strong>Error: </strong>{error}</div> : null}
+      {diagnostics ? <div className="sub" style={{ marginTop: 10 }}>Calculation engine {diagnostics.calculationVersion}; weights are backend-calculated decimal values.</div> : null}
     </div>
   );
 }
