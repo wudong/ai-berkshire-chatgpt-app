@@ -22,3 +22,20 @@ jobs:
         run: bun run check
       - name: Validate deployment scripts
         run: bash -n deploy/scripts/*.sh
+      - name: Validate GCP configuration contract
+        run: |
+          set -euo pipefail
+          grep -q 'GCP_WIF_PROVIDER: projects/126174378735/locations/global/workloadIdentityPools/ai-berkshire-actions/providers/deploy' .github/workflows/deploy.yml
+          grep -q 'GCP_PARAMETER: ai-berkshire-deploy-prod' .github/workflows/deploy.yml
+          grep -q 'GCP_WIF_PROVIDER: projects/126174378735/locations/global/workloadIdentityPools/ai-berkshire-actions/providers/rollback' .github/workflows/rollback.yml
+          grep -q 'GCP_PARAMETER: ai-berkshire-rollback-prod' .github/workflows/rollback.yml
+          grep -q 'parametermanager parameters versions render latest' .github/workflows/deploy.yml
+          grep -q 'parametermanager parameters versions render latest' .github/workflows/rollback.yml
+          if grep -n -E '\$\{\{ (vars|secrets)\.AI_BERKSHIRE_' .github/workflows/deploy.yml .github/workflows/rollback.yml; then
+            echo 'AI Berkshire workflows must not read deployment configuration from GitHub Variables/Secrets.' >&2
+            exit 1
+          fi
+          if grep -n -E 'ssh-keyscan|StrictHostKeyChecking=no|UserKnownHostsFile=/dev/null' .github/workflows/deploy.yml .github/workflows/rollback.yml; then
+            echo 'AI Berkshire workflows must retain pinned/managed host verification.' >&2
+            exit 1
+          fi

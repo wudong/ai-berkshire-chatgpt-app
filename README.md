@@ -237,7 +237,7 @@ A manual rollback workflow is provided in `.github/workflows/rollback.yml` and u
 Manual `workflow_dispatch` defaults to `mode=canary`. The canary performs no production mutation. It proves:
 
 - GitHub OIDC can exchange into the AI Berkshire WIF provider;
-- the deploy reader can read its exact Secret Manager runtime allowlist, including the shared internal MCP Google OAuth values;
+- the deploy reader can render its exact `ai-berkshire-deploy-prod` parameter and resolve the shared internal MCP Google OAuth references;
 - the shared VPS deployment key works with the pinned host key;
 - `cloudflared` and `postgresql` are active on the VPS.
 
@@ -245,9 +245,12 @@ It does not upload a release, write runtime configuration, restart services, or 
 
 ### GCloud dependency
 
-The repository-specific WIF/IAM boundary is managed in `wudong/gcloud`. As with TT Players, Terraform grants the deploy workload `roles/secretmanager.secretAccessor` only on an explicit list of pre-existing Secret Manager entries. Secret values and versions remain outside Terraform state.
+The repository-specific WIF/IAM and Parameter Manager boundaries are managed in
+`wudong/gcloud`. Terraform grants the Parameter Manager parameter identity
+`roles/secretmanager.secretAccessor` only on the explicit references declared
+by each parameter. Secret values and versions remain outside Terraform state.
 
-The deploy reader uses:
+The deploy parameter resolves:
 
 - `tt-players-hetzner-vps-deploy-key`;
 - `cloudflare-account-id`;
@@ -256,32 +259,39 @@ The deploy reader uses:
 - `mcp-internal-google-client-secret`;
 - `mcp-internal-allowed-google-email`.
 
-The rollback reader can read only `tt-players-hetzner-vps-deploy-key`.
+The rollback parameter resolves only `tt-players-hetzner-vps-deploy-key`.
 
 The earlier `ai-berkshire-google-oauth-client-secret` container remains managed temporarily during migration but is no longer in the deploy reader allowlist and is not consumed by the application workflow.
 
-### Required repository Variables
+### GCP deployment configuration
 
-WIF outputs from the GCloud Terraform apply:
+The deployment and rollback workflows commit only stable, non-secret bootstrap
+coordinates:
 
-- `AI_BERKSHIRE_DEPLOY_WIF_PROVIDER`;
-- `AI_BERKSHIRE_DEPLOY_SERVICE_ACCOUNT`;
-- `AI_BERKSHIRE_ROLLBACK_WIF_PROVIDER`;
-- `AI_BERKSHIRE_ROLLBACK_SERVICE_ACCOUNT`.
+- GCP project: `wudong-agent-master`;
+- deploy WIF provider: `ai-berkshire-actions/providers/deploy`;
+- deploy service account: `ai-berkshire-deploy-reader@wudong-agent-master.iam.gserviceaccount.com`;
+- deploy parameter: `ai-berkshire-deploy-prod`;
+- rollback WIF provider: `ai-berkshire-actions/providers/rollback`;
+- rollback service account: `ai-berkshire-rollback-reader@wudong-agent-master.iam.gserviceaccount.com`;
+- rollback parameter: `ai-berkshire-rollback-prod`.
 
-Shared/public deployment configuration:
+`ai-berkshire-deploy-prod` is the ordinary deployment-config source of truth.
+It contains the VPS host/user and pinned public host key, MCP hostname/origin,
+Cloudflare zone/tunnel IDs, the optional Google subject, and explicit
+Secret Manager references for the deployment key, Cloudflare credentials, and
+internal MCP Google OAuth values. Parameter Manager resolves those references
+when the trusted workflow renders the parameter into a mode-0600 temporary file.
 
-- `AI_BERKSHIRE_VPS_HOST`;
-- `AI_BERKSHIRE_VPS_USER`;
-- `AI_BERKSHIRE_VPS_HOST_KEY`;
-- `AI_BERKSHIRE_MCP_HOSTNAME`;
-- `AI_BERKSHIRE_CLOUDFLARE_ZONE_ID`;
-- `AI_BERKSHIRE_CLOUDFLARE_TUNNEL_ID`;
-- `AI_BERKSHIRE_ALLOWED_GOOGLE_SUB` — optional.
+`ai-berkshire-rollback-prod` is intentionally narrower. It contains only the
+VPS connection/configuration needed to switch releases and verify health, plus
+the shared VPS deploy-key reference. Rollback has no access to OAuth,
+Cloudflare, or application runtime configuration.
 
-Google client ID, client secret, and allowed email are intentionally absent from repository Variables because they are loaded from GCP Secret Manager.
-
-The Cloudflare tunnel is shared safely: the deployment script changes only the ingress entry for `AI_BERKSHIRE_MCP_HOSTNAME` and leaves unrelated hostnames untouched.
+The Cloudflare tunnel is shared safely: the deployment script changes only the
+ingress entry for `ai-berkshire-mcp.graceliu.uk` and leaves unrelated hostnames
+untouched. Secret values remain in Secret Manager and are never committed or
+stored in Terraform parameter data.
 
 ## Production isolation
 
