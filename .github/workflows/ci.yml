@@ -35,6 +35,14 @@ jobs:
           grep -q 'GCP_PARAMETER: ai-berkshire-rollback-prod' .github/workflows/rollback.yml
           grep -q 'parametermanager parameters versions render latest' .github/workflows/deploy.yml
           grep -q 'parametermanager parameters versions render latest' .github/workflows/rollback.yml
+          grep -q '.schema_version == 2' .github/workflows/deploy.yml
+          grep -q '.schema_version == 2' .github/workflows/rollback.yml
+          grep -q 'vps_ssh_key_secret_id == "tt-players-hetzner-vps-deploy-key"' .github/workflows/deploy.yml
+          grep -q 'vps_ssh_key_secret_id == "tt-players-hetzner-vps-deploy-key"' .github/workflows/rollback.yml
+          grep -q 'gcloud secrets versions access latest' .github/workflows/deploy.yml
+          grep -q 'gcloud secrets versions access latest' .github/workflows/rollback.yml
+          grep -Fq 'test "$VPS_SSH_KEY_SECRET_ID" = "tt-players-hetzner-vps-deploy-key"' .github/workflows/deploy.yml
+          grep -Fq 'test "$VPS_SSH_KEY_SECRET_ID" = "tt-players-hetzner-vps-deploy-key"' .github/workflows/rollback.yml
           grep -Fq "if: steps.mode.outputs.mode == 'canary' || steps.mode.outputs.mode == 'deploy'" .github/workflows/deploy.yml
           preflight_line="$(grep -n 'name: WIF and VPS preflight canary' .github/workflows/deploy.yml | cut -d: -f1)"
           upload_line="$(grep -n 'name: Upload versioned release' .github/workflows/deploy.yml | cut -d: -f1)"
@@ -45,5 +53,9 @@ jobs:
           fi
           if grep -n -E 'ssh-keyscan|StrictHostKeyChecking=no|UserKnownHostsFile=/dev/null' .github/workflows/deploy.yml .github/workflows/rollback.yml; then
             echo 'AI Berkshire workflows must retain pinned/managed host verification.' >&2
+            exit 1
+          fi
+          if grep -n -E "jq -r '\\.secrets\\.vps_ssh_key'" .github/workflows/deploy.yml .github/workflows/rollback.yml; then
+            echo 'Multiline VPS SSH key must not be read from rendered Parameter Manager JSON.' >&2
             exit 1
           fi
