@@ -11,6 +11,12 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  GCP_PROJECT_ID: wudong-agent-master
+  GCP_WIF_PROVIDER: projects/126174378735/locations/global/workloadIdentityPools/ai-berkshire-actions/providers/rollback
+  GCP_SERVICE_ACCOUNT: ai-berkshire-rollback-reader@wudong-agent-master.iam.gserviceaccount.com
+  GCP_PARAMETER: ai-berkshire-rollback-prod
+
 jobs:
   rollback:
     runs-on: ubuntu-latest
@@ -19,24 +25,43 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
-          project_id: wudong-agent-master
-          workload_identity_provider: ${{ vars.AI_BERKSHIRE_ROLLBACK_WIF_PROVIDER }}
-          service_account: ${{ vars.AI_BERKSHIRE_ROLLBACK_SERVICE_ACCOUNT }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
 
-      - name: Load VPS deploy key
-        id: gcp-secrets
-        uses: google-github-actions/get-secretmanager-secrets@v3
-        with:
-          secrets: |-
-            vps_ssh_key:wudong-agent-master/tt-players-hetzner-vps-deploy-key
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Render and validate rollback configuration
+        env:
+          CONFIG_FILE: ${{ runner.temp }}/ai-berkshire-rollback-${{ github.run_id }}.json
+        run: |
+          set -euo pipefail
+          umask 077
+          gcloud parametermanager parameters versions render latest \
+            --parameter="$GCP_PARAMETER" \
+            --location=global \
+            --project="$GCP_PROJECT_ID" \
+            --format='value(renderedPayload)' \
+            | base64 -d > "$CONFIG_FILE"
+          chmod 600 "$CONFIG_FILE"
+          jq -e '
+            .schema_version == 1 and
+            (.vps.host | type == "string" and length > 0) and
+            (.vps.user | type == "string" and length > 0) and
+            (.vps.host_key | type == "string" and startswith("ssh-")) and
+            (.mcp.hostname | type == "string" and length > 0) and
+            (.secrets.vps_ssh_key | type == "string" and length > 0)
+          ' "$CONFIG_FILE" >/dev/null
 
       - name: Configure deployment SSH
         env:
-          VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
-          VPS_HOST_KEY: ${{ vars.AI_BERKSHIRE_VPS_HOST_KEY }}
-          VPS_SSH_KEY: ${{ steps.gcp-secrets.outputs.vps_ssh_key }}
+          CONFIG_FILE: ${{ runner.temp }}/ai-berkshire-rollback-${{ github.run_id }}.json
         run: |
           set -euo pipefail
+          VPS_HOST="$(jq -r '.vps.host' "$CONFIG_FILE")"
+          VPS_HOST_KEY="$(jq -r '.vps.host_key' "$CONFIG_FILE")"
+          VPS_SSH_KEY="$(jq -r '.secrets.vps_ssh_key' "$CONFIG_FILE")"
           test -n "$VPS_HOST"
           test -n "$VPS_HOST_KEY"
           test -n "$VPS_SSH_KEY"
@@ -48,25 +73,29 @@ jobs:
 
       - name: Roll back current release
         env:
-          VPS_HOST: ${{ vars.AI_BERKSHIRE_VPS_HOST }}
-          VPS_USER: ${{ vars.AI_BERKSHIRE_VPS_USER }}
+          CONFIG_FILE: ${{ runner.temp }}/ai-berkshire-rollback-${{ github.run_id }}.json
         run: |
           set -euo pipefail
+          VPS_HOST="$(jq -r '.vps.host' "$CONFIG_FILE")"
+          VPS_USER="$(jq -r '.vps.user' "$CONFIG_FILE")"
           test -n "$VPS_USER"
           ssh "$VPS_USER@$VPS_HOST" \
             'bash /opt/ai-berkshire-mcp/current/deploy/scripts/rollback-vps-release.sh'
 
       - name: Verify production health
         env:
-          MCP_HOSTNAME: ${{ vars.AI_BERKSHIRE_MCP_HOSTNAME }}
+          CONFIG_FILE: ${{ runner.temp }}/ai-berkshire-rollback-${{ github.run_id }}.json
         run: |
-          test -n "$MCP_HOSTNAME"
+          set -euo pipefail
+          MCP_HOSTNAME="$(jq -r '.mcp.hostname' "$CONFIG_FILE")"
           curl --fail --silent --show-error \
             --retry 20 --retry-delay 5 --retry-all-errors \
             "https://$MCP_HOSTNAME/healthz"
 
       - name: Clean temporary credentials
         if: always()
+        env:
+          CONFIG_FILE: ${{ runner.temp }}/ai-berkshire-rollback-${{ github.run_id }}.json
         run: |
-          rm -f ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          rm -f ~/.ssh/id_ed25519 ~/.ssh/known_hosts "$CONFIG_FILE"
           find "${RUNNER_TEMP:-/tmp}" -maxdepth 1 -type f -name 'gha-creds-*.json' -delete 2>/dev/null || true
