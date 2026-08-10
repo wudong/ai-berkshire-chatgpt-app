@@ -88,7 +88,7 @@ jobs:
             | base64 -d > "$CONFIG_FILE"
           chmod 600 "$CONFIG_FILE"
           jq -e '
-            .schema_version == 1 and
+            .schema_version == 2 and
             (.vps.host | type == "string" and length > 0) and
             (.vps.user | type == "string" and length > 0) and
             (.vps.host_key | type == "string" and startswith("ssh-")) and
@@ -98,7 +98,7 @@ jobs:
             (.cloudflare.zone_id | type == "string" and length > 0) and
             (.cloudflare.tunnel_id | type == "string" and length > 0) and
             (.google.allowed_sub | type == "string") and
-            (.secrets.vps_ssh_key | type == "string" and length > 0) and
+            (.secrets.vps_ssh_key_secret_id == "tt-players-hetzner-vps-deploy-key") and
             (.secrets.cloudflare_account_id | type == "string" and length > 0) and
             (.secrets.cloudflare_api_token | type == "string" and length > 0) and
             (.secrets.google_client_id | type == "string" and length > 0) and
@@ -113,12 +113,15 @@ jobs:
           set -euo pipefail
           VPS_HOST="$(jq -r '.vps.host' "$CONFIG_FILE")"
           VPS_HOST_KEY="$(jq -r '.vps.host_key' "$CONFIG_FILE")"
-          VPS_SSH_KEY="$(jq -r '.secrets.vps_ssh_key' "$CONFIG_FILE")"
+          VPS_SSH_KEY_SECRET_ID="$(jq -r '.secrets.vps_ssh_key_secret_id' "$CONFIG_FILE")"
           test -n "$VPS_HOST"
           test -n "$VPS_HOST_KEY"
-          test -n "$VPS_SSH_KEY"
+          test "$VPS_SSH_KEY_SECRET_ID" = "tt-players-hetzner-vps-deploy-key"
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          gcloud secrets versions access latest \
+            --secret="$VPS_SSH_KEY_SECRET_ID" \
+            --project="$GCP_PROJECT_ID" > ~/.ssh/id_ed25519
+          test -s ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           printf '%s %s\n' "$VPS_HOST" "$VPS_HOST_KEY" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
@@ -136,7 +139,8 @@ jobs:
             echo '### AI Berkshire delivery canary'
             echo '- GitHub OIDC → GCP WIF: **passed**'
             echo '- Parameter Manager render/schema validation: **passed**'
-            echo '- Secret Manager references resolved by Parameter Manager: **passed**'
+            echo '- One-line Secret Manager references resolved by Parameter Manager: **passed**'
+            echo '- VPS SSH key read through secret-scoped Secret Manager access: **passed**'
             echo '- Pinned-host-key VPS SSH: **passed**'
             echo '- VPS cloudflared/postgresql health: **passed**'
             echo '- Production mutation before this gate: **none**'
@@ -243,8 +247,8 @@ jobs:
             echo "- Endpoint: \`https://$MCP_HOSTNAME/mcp\`"
             echo '- Local origin: `http://127.0.0.1:3020`'
             echo '- Auth: Better Auth MCP OAuth + Google provider'
-            echo '- Config: Parameter Manager `ai-berkshire-deploy-prod`'
-            echo '- Secrets: explicit Secret Manager references rendered by Parameter Manager'
+            echo '- Config: Parameter Manager `ai-berkshire-deploy-prod` schema v2'
+            echo '- Secrets: one-line values rendered by Parameter Manager; VPS SSH key read directly from its secret-scoped Secret Manager grant'
             echo '- CI credentials: GitHub OIDC → GCP WIF'
           } >> "$GITHUB_STEP_SUMMARY"
 
