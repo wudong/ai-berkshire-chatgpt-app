@@ -123,8 +123,8 @@ jobs:
           printf '%s %s\n' "$VPS_HOST" "$VPS_HOST_KEY" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: WIF and VPS canary
-        if: steps.mode.outputs.mode == 'canary'
+      - name: WIF and VPS preflight canary
+        if: steps.mode.outputs.mode == 'canary' || steps.mode.outputs.mode == 'deploy'
         env:
           CONFIG_FILE: ${{ runner.temp }}/ai-berkshire-config-${{ github.run_id }}.json
         run: |
@@ -139,7 +139,7 @@ jobs:
             echo '- Secret Manager references resolved by Parameter Manager: **passed**'
             echo '- Pinned-host-key VPS SSH: **passed**'
             echo '- VPS cloudflared/postgresql health: **passed**'
-            echo '- Production mutation: **none**'
+            echo '- Production mutation before this gate: **none**'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload versioned release
