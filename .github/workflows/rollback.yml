@@ -46,12 +46,12 @@ jobs:
             | base64 -d > "$CONFIG_FILE"
           chmod 600 "$CONFIG_FILE"
           jq -e '
-            .schema_version == 1 and
+            .schema_version == 2 and
             (.vps.host | type == "string" and length > 0) and
             (.vps.user | type == "string" and length > 0) and
             (.vps.host_key | type == "string" and startswith("ssh-")) and
             (.mcp.hostname | type == "string" and length > 0) and
-            (.secrets.vps_ssh_key | type == "string" and length > 0)
+            (.secrets.vps_ssh_key_secret_id == "tt-players-hetzner-vps-deploy-key")
           ' "$CONFIG_FILE" >/dev/null
 
       - name: Configure deployment SSH
@@ -61,12 +61,15 @@ jobs:
           set -euo pipefail
           VPS_HOST="$(jq -r '.vps.host' "$CONFIG_FILE")"
           VPS_HOST_KEY="$(jq -r '.vps.host_key' "$CONFIG_FILE")"
-          VPS_SSH_KEY="$(jq -r '.secrets.vps_ssh_key' "$CONFIG_FILE")"
+          VPS_SSH_KEY_SECRET_ID="$(jq -r '.secrets.vps_ssh_key_secret_id' "$CONFIG_FILE")"
           test -n "$VPS_HOST"
           test -n "$VPS_HOST_KEY"
-          test -n "$VPS_SSH_KEY"
+          test "$VPS_SSH_KEY_SECRET_ID" = "tt-players-hetzner-vps-deploy-key"
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/id_ed25519
+          gcloud secrets versions access latest \
+            --secret="$VPS_SSH_KEY_SECRET_ID" \
+            --project="$GCP_PROJECT_ID" > ~/.ssh/id_ed25519
+          test -s ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           printf '%s %s\n' "$VPS_HOST" "$VPS_HOST_KEY" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
